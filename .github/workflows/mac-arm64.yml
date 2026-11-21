@@ -16,10 +16,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
-            cpu: apple-m1
+          # macos-14 standard arm64 is not available on this account
+          # ("configuration macos-14-arm64-us-default is not supported").
+          # macos-15 currently provisions a 3-vCPU Apple M1 (Virtual) runner.
           - os: macos-15
-            cpu: apple-m2
+            cpu: apple-m1
+            prebuilt: cpu-bench-arm64-m1
     steps:
       - uses: actions/checkout@v4
 
@@ -69,9 +71,8 @@ jobs:
       - name: Run prebuilt binary
         run: |
           set -x
-          chmod +x "cpu-bench-arm64-$( [ "${{ matrix.os }}" = "macos-14" ] && echo m1 || echo m2 )"
-          BIN="cpu-bench-arm64-$( [ "${{ matrix.os }}" = "macos-14" ] && echo m1 || echo m2 )"
-          "./$BIN" --quick --json "prebuilt-${{ matrix.os }}.json"
+          chmod +x "${{ matrix.prebuilt }}"
+          "./${{ matrix.prebuilt }}" --quick --json "prebuilt-${{ matrix.os }}.json"
 
       - name: Upload results
         uses: actions/upload-artifact@v4
