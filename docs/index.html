@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>浏览器 CPU 计算跑分</title>
+<style>
+:root{
+  --bg:#0b1220; --panel:#111b2e; --panel2:#0d1626; --line:#26344d;
+  --text:#e6edf7; --muted:#8fa3bd; --cyan:#22d3ee; --blue:#60a5fa;
+  --green:#34d399; --amber:#fbbf24; --red:#fb7185;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:
+  radial-gradient(900px 500px at 80% -10%,rgba(34,211,238,.14),transparent 60%),
+  radial-gradient(700px 400px at 0% 10%,rgba(96,165,250,.10),transparent 55%),
+  var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;}
+body{min-height:100vh;line-height:1.5}
+.wrap{max-width:980px;margin:0 auto;padding:28px 18px 48px}
+header{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:18px}
+h1{font-size:clamp(22px,4vw,34px);line-height:1.15;margin:0 0 6px;letter-spacing:-.02em}
+.sub{color:var(--muted);font-size:14px}
+.badge{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);background:rgba(17,27,46,.7);color:var(--muted);border-radius:999px;padding:7px 11px;font-size:12px;white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--cyan);box-shadow:0 0 12px rgba(34,211,238,.8)}
+.card{background:linear-gradient(180deg,rgba(17,27,46,.95),rgba(13,22,38,.92));border:1px solid var(--line);border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,.25);padding:18px;margin:14px 0}
+.grid{display:grid;grid-template-columns:1.1fr .9fr;gap:14px}
+@media (max-width:760px){.grid{grid-template-columns:1fr}header{flex-direction:column}.badge{white-space:normal}}
+.kv{display:grid;grid-template-columns:84px 1fr;gap:6px 10px;font-size:13px}
+.kv .k{color:var(--muted)}
+.kv .v{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow-wrap:anywhere}
+.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}
+button{appearance:none;border:1px solid var(--line);border-radius:11px;padding:11px 16px;font:inherit;font-weight:700;color:var(--text);background:#16243b;cursor:pointer;transition:transform .08s ease,background .15s ease,border-color .15s ease}
+button:hover{background:#1b2d49;border-color:#3b557c}
+button:active{transform:scale(.985)}
+button.primary{background:linear-gradient(135deg,#0891b2,#2563eb);border-color:transparent;box-shadow:0 8px 26px rgba(37,99,235,.28)}
+button:disabled{opacity:.55;cursor:not-allowed;box-shadow:none}
+.status{min-height:22px;color:var(--muted);font-size:13px;margin-top:12px}
+.progress{height:8px;background:#0a1322;border:1px solid var(--line);border-radius:999px;overflow:hidden;margin-top:12px}
+.progress > i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--cyan),var(--blue));transition:width .2s ease}
+.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}
+@media (max-width:600px){.summary{grid-template-columns:1fr}}
+.metric{background:var(--panel2);border:1px solid var(--line);border-radius:13px;padding:12px 13px}
+.metric .label{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}
+.metric .value{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:25px;font-weight:800;margin-top:3px}
+.metric .value small{font-size:12px;color:var(--muted);font-weight:600;margin-left:3px}
+.metric .hint{color:var(--muted);font-size:11px;margin-top:2px}
+.table-wrap{overflow-x:auto;margin-top:12px;border:1px solid var(--line);border-radius:12px}
+table{width:100%;border-collapse:collapse;font-size:13px;min-width:540px}
+th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th{color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase;background:#0f1a2c}
+th:first-child,td:first-child{text-align:left}
+tr:last-child td{border-bottom:0}
+td{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+td.name{font-family:inherit;color:#dbe7f6}
+td.dash{color:var(--muted)}
+.note{color:var(--muted);font-size:12px;line-height:1.65}
+.note b{color:#cbd8ea}
+.warn{border-left:3px solid var(--amber);padding-left:10px}
+.out{background:#09111f;border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:12px;white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:#c7d5e8;display:none}
+.footer{color:#6f849e;font-size:11px;text-align:center;margin-top:24px;line-height:1.7}
+a{color:#7dd3fc}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>浏览器 CPU 计算跑分</h1>
+      <div class="sub">iPhone / Android · 纯 JavaScript 计算吞吐 · 不依赖网络与 App</div>
+    </div>
+    <div class="badge"><span class="dot"></span><span id="browserBadge">Browser Compute</span></div>
+  </header>
+
+  <div class="grid">
+    <section class="card">
+      <div class="kv">
+        <div class="k">设备</div><div class="v" id="devOs">检测中…</div>
+        <div class="k">浏览器</div><div class="v" id="devBrowser">—</div>
+        <div class="k">逻辑核心</div><div class="v" id="devThreads">—</div>
+        <div class="k">内存提示</div><div class="v" id="devMemory">—</div>
+      </div>
+      <div class="actions">
+        <button class="primary" id="startBtn">开始测试</button>
+        <button id="copyBtn" disabled>复制结果</button>
+        <button id="shareBtn" disabled>分享</button>
+      </div>
+      <div class="progress"><i id="bar"></i></div>
+      <div class="status" id="status">点击“开始测试”，全程约 8~15 秒。</div>
+      <div class="summary" id="summary" style="display:none">
+        <div class="metric"><div class="label">单核综合</div><div class="value" id="singleIndex">—<small>Mops/s</small></div><div class="hint">几何平均</div></div>
+        <div class="metric"><div class="label">全核综合</div><div class="value" id="multiIndex">—<small>Mops/s</small></div><div class="hint">几何平均</div></div>
+        <div class="metric"><div class="label">综合吞吐</div><div class="value" id="overallIndex">—<small>Mops/s</small></div><div class="hint">sqrt(单核 × 全核)</div></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="note">
+        <p><b>测什么：</b>整数加法/乘法、串行整数 hash、FP64 融合乘加、FP64 开方。所有热循环只访问局部变量，不测内存带宽、GPU 或网络。</p>
+        <p><b>怎么测：</b>自动校准到约 0.15 秒/次，取 3 次中位数；多核用 Web Worker 并行，线程数取 <code>navigator.hardwareConcurrency</code>，最多 8。</p>
+        <p class="warn"><b>注意：</b>这是浏览器 JS 成绩，受 Safari/Chrome JIT、后台标签页、低电量模式和散热影响，<b>不能和原生 Mac/Windows 分数直接比较</b>。跨手机对比也建议用同一浏览器、同一电源状态。</p>
+      </div>
+    </section>
+  </div>
+
+  <section class="card" id="resultsCard">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <div><b>测试结果</b><div class="note" style="margin:2px 0 0">原始吞吐是主结果；综合值是各项目的几何平均。</div></div>
+      <div class="badge" id="runBadge" style="display:none"><span class="dot" style="background:var(--green)"></span><span>完成</span></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>项目</th><th>单核</th><th>全部核心</th><th>单位</th></tr></thead>
+        <tbody id="resultsBody">
+          <tr><td class="name">等待测试</td><td class="dash">—</td><td class="dash">—</td><td class="dash">—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="out" id="output"></div>
+  </section>
+
+  <div class="footer">
+    Browser Compute Benchmark · 单文件离线运行<br>
+    iPhone / Android 均可使用；Web Worker 不可用时自动只测单核。
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ------------------------------ basic helpers ------------------------------ */
+const $ = (s) => document.querySelector(s);
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const now = () => performance.now();
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+
+function fmt(x, digits = 2) {
+  if (!isFinite(x)) return "—";
+  return x.toFixed(digits);
+}
+function geo(values) {
+  const v = values.filter(x => isFinite(x) && x > 0);
+  if (!v.length) return 0;
+  return Math.exp(v.reduce((s, x) => s + Math.log(x), 0) / v.length);
+}
+function median(values) {
+  const v = values.slice().sort((a, b) => a - b);
+  if (!v.length) return 0;
+  const m = v.length >> 1;
+  return v.length & 1 ? v[m] : (v[m - 1] + v[m]) / 2;
+}
+function osName(ua) {
+  if (/iPhone|iPad|iPod/i.test(ua)) return "iOS / iPadOS";
+  if (/Android/i.test(ua)) return "Android";
+  if (/Macintosh/i.test(ua)) return "macOS";
+  if (/Windows/i.test(ua)) return "Windows";
+  return "未知设备";
+}
+function browserName(ua) {
+  if (/CriOS/i.test(ua)) return "Chrome iOS";
+  if (/FxiOS/i.test(ua)) return "Firefox iOS";
+  if (/EdgiOS/i.test(ua)) return "Edge iOS";
+  if (/Safari/i.test(ua) && !/Chrome|Chromium|CriOS|Edg/i.test(ua)) return "Safari";
+  if (/Firefox/i.test(ua)) return "Firefox";
+  if (/Edg/i.test(ua)) return "Edge";
+  if (/Chrome|Chromium/i.test(ua)) return "Chrome";
+  return "Browser";
+}
+
+/* ------------------------------- compute kernels ---------------------------- */
+/* 32-bit integer kernels use JS bitwise ops; FP kernels use IEEE-754 doubles. */
+
+function intAdd(n) {
+  let a0 = 0x1234567, a1 = 0x2345678, a2 = 0x3456789, a3 = 0x456789a;
+  let a4 = 0x56789ab, a5 = 0x6789abc, a6 = 0x789abcd, a7 = 0x89abcde;
+  for (let i = 0; i < n; i++) {
+    a0 = (a0 + 0x1f123bb5) | 0; a1 = (a1 + 0x2a3b4c5d) | 0;
+    a2 = (a2 + 0x13579bdf) | 0; a3 = (a3 + 0x2468ace1) | 0;
+    a4 = (a4 + 0x0badf00d) | 0; a5 = (a5 + 0x31415927) | 0;
+    a6 = (a6 + 0x27182819) | 0; a7 = (a7 + 0x11235813) | 0;
+  }
+  return (a0 ^ (a1 << 1) ^ (a2 << 2) ^ (a3 << 3) ^
+          (a4 << 4) ^ (a5 << 5) ^ (a6 << 6) ^ (a7 << 7)) | 0;
+}
+function intMul(n) {
+  let a0 = 0x1234567, a1 = 0x2345678, a2 = 0x3456789, a3 = 0x456789a;
+  let a4 = 0x56789ab, a5 = 0x6789abc, a6 = 0x789abcd, a7 = 0x89abcde;
+  for (let i = 0; i < n; i++) {
+    a0 = Math.imul(a0, 0x9e3779b1); a1 = Math.imul(a1, 0x85ebca6b);
+    a2 = Math.imul(a2, 0xc2b2ae35); a3 = Math.imul(a3, 0x27d4eb2f);
+    a4 = Math.imul(a4, 0x165667b1); a5 = Math.imul(a5, 0x9e3779b9);
+    a6 = Math.imul(a6, 0x7f4a7c15); a7 = Math.imul(a7, 0x94d049bb);
+  }
+  return (a0 ^ (a1 << 1) ^ (a2 << 2) ^ (a3 << 3) ^
+          (a4 << 4) ^ (a5 << 5) ^ (a6 << 6) ^ (a7 << 7)) | 0;
+}
+function intHash(n) {
+  let x = 0x243f6a88 | 0, acc = 0;
+  for (let i = 0; i < n; i++) {
+    x = (x + 0x9e3779b9) | 0;
+    x ^= x >>> 16;
+    x = Math.imul(x, 0x21f0aaad);
+    x ^= x >>> 15;
+    x = Math.imul(x, 0x735a2d97);
+    x ^= x >>> 15;
+    acc ^= x;
+  }
+  return acc | 0;
+}
+function fp64Fma(n) {
+  let a0 = 1.0, a1 = 1.1, a2 = 1.2, a3 = 1.3;
+  let a4 = 1.4, a5 = 1.5, a6 = 1.6, a7 = 1.7;
+  const b = 0.999999999, c = 1.0;
+  for (let i = 0; i < n; i++) {
+    a0 = a0 * b + c; a1 = a1 * b + c; a2 = a2 * b + c; a3 = a3 * b + c;
+    a4 = a4 * b + c; a5 = a5 * b + c; a6 = a6 * b + c; a7 = a7 * b + c;
+  }
+  return a0 + a1 + a2 + a3 + a4 + a5 + a6 + a7;
+}
+function fp64Sqrt(n) {
+  let a0 = 0.1, a1 = 0.2, a2 = 0.3, a3 = 0.4;
+  let a4 = 0.5, a5 = 0.6, a6 = 0.7, a7 = 0.8;
+  for (let i = 0; i < n; i++) {
+    a0 = Math.sqrt(a0 + 1.0); a1 = Math.sqrt(a1 + 1.0);
+    a2 = Math.sqrt(a2 + 1.0); a3 = Math.sqrt(a3 + 1.0);
+    a4 = Math.sqrt(a4 + 1.0); a5 = Math.sqrt(a5 + 1.0);
+    a6 = Math.sqrt(a6 + 1.0); a7 = Math.sqrt(a7 + 1.0);
+  }
+  return a0 + a1 + a2 + a3 + a4 + a5 + a6 + a7;
+}
+
+const SPECS = [
+  { id:"int_add",  name:"INT32 add",  unit:"Mop/s",  scale:1e6, ops:8, fn:intAdd },
+  { id:"int_mul",  name:"INT32 mul",  unit:"Mop/s",  scale:1e6, ops:8, fn:intMul },
+  { id:"int_hash", name:"INT32 hash", unit:"Mhash/s",scale:1e6, ops:1, fn:intHash },
+  { id:"fp64_fma", name:"FP64 FMA",   unit:"GFLOP/s",scale:1e9, ops:16, fn:fp64Fma },
+  { id:"fp64_sqrt",name:"FP64 sqrt",  unit:"Gsqrt/s",scale:1e9, ops:8, fn:fp64Sqrt },
+];
+
+/* --------------------------------- workers ---------------------------------- */
+const workerSource = `
+"use strict";
+function intAdd(n){let a0=0x1234567,a1=0x2345678,a2=0x3456789,a3=0x456789a,a4=0x56789ab,a5=0x6789abc,a6=0x789abcd,a7=0x89abcde;for(let i=0;i<n;i++){a0=(a0+0x1f123bb5)|0;a1=(a1+0x2a3b4c5d)|0;a2=(a2+0x13579bdf)|0;a3=(a3+0x2468ace1)|0;a4=(a4+0x0badf00d)|0;a5=(a5+0x31415927)|0;a6=(a6+0x27182819)|0;a7=(a7+0x11235813)|0;}return (a0^(a1<<1)^(a2<<2)^(a3<<3)^(a4<<4)^(a5<<5)^(a6<<6)^(a7<<7))|0;}
+function intMul(n){let a0=0x1234567,a1=0x2345678,a2=0x3456789,a3=0x456789a,a4=0x56789ab,a5=0x6789abc,a6=0x789abcd,a7=0x89abcde;for(let i=0;i<n;i++){a0=Math.imul(a0,0x9e3779b1);a1=Math.imul(a1,0x85ebca6b);a2=Math.imul(a2,0xc2b2ae35);a3=Math.imul(a3,0x27d4eb2f);a4=Math.imul(a4,0x165667b1);a5=Math.imul(a5,0x9e3779b9);a6=Math.imul(a6,0x7f4a7c15);a7=Math.imul(a7,0x94d049bb);}return (a0^(a1<<1)^(a2<<2)^(a3<<3)^(a4<<4)^(a5<<5)^(a6<<6)^(a7<<7))|0;}
+function intHash(n){let x=0x243f6a88|0,acc=0;for(let i=0;i<n;i++){x=(x+0x9e3779b9)|0;x^=x>>>16;x=Math.imul(x,0x21f0aaad);x^=x>>>15;x=Math.imul(x,0x735a2d97);x^=x>>>15;acc^=x;}return acc|0;}
+function fp64Fma(n){let a0=1.0,a1=1.1,a2=1.2,a3=1.3,a4=1.4,a5=1.5,a6=1.6,a7=1.7;const b=0.999999999,c=1.0;for(let i=0;i<n;i++){a0=a0*b+c;a1=a1*b+c;a2=a2*b+c;a3=a3*b+c;a4=a4*b+c;a5=a5*b+c;a6=a6*b+c;a7=a7*b+c;}return a0+a1+a2+a3+a4+a5+a6+a7;}
+function fp64Sqrt(n){let a0=0.1,a1=0.2,a2=0.3,a3=0.4,a4=0.5,a5=0.6,a6=0.7,a7=0.8;for(let i=0;i<n;i++){a0=Math.sqrt(a0+1.0);a1=Math.sqrt(a1+1.0);a2=Math.sqrt(a2+1.0);a3=Math.sqrt(a3+1.0);a4=Math.sqrt(a4+1.0);a5=Math.sqrt(a5+1.0);a6=Math.sqrt(a6+1.0);a7=Math.sqrt(a7+1.0);}return a0+a1+a2+a3+a4+a5+a6+a7;}
+const FNS={int_add:intAdd,int_mul:intMul,int_hash:intHash,fp64_fma:fp64Fma,fp64_sqrt:fp64Sqrt};
+self.onmessage=(ev)=>{const d=ev.data;if(d.cmd==="run"){const fn=FNS[d.id];const c=fn(d.n);self.postMessage({type:"done",checksum:c});}};
+self.postMessage({type:"ready"});
+`;
+
+const workerURL = (() => {
+  try {
+    return URL.createObjectURL(new Blob([workerSource], { type:"application/javascript" }));
+  } catch (_) { return null; }
+})();
+
+async function runMulti(spec, n, threads, samples) {
+  if (!workerURL || typeof Worker === "undefined") throw new Error("Worker unavailable");
+  const workers = [];
+  const ready = [];
+  for (let i = 0; i < threads; i++) {
+    const w = new Worker(workerURL);
+    workers.push(w);
+    ready.push(new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Worker startup timeout")), 4000);
+      w.onmessage = (e) => {
+        if (e.data && e.data.type === "ready") { clearTimeout(timer); resolve(); }
+      };
+      w.onerror = () => { clearTimeout(timer); reject(new Error("Worker error")); };
+    }));
+  }
+  try {
+    await Promise.all(ready);
+
+    // Warm up each worker's JIT once, untimed, so the first sample is not
+    // dominated by compilation.
+    const warmN = Math.max(1, Math.floor(n / 4));
+    await new Promise((resolve, reject) => {
+      let left = workers.length;
+      const timer = setTimeout(() => reject(new Error("Worker warmup timeout")), 10000);
+      workers.forEach((w) => {
+        w.onmessage = (e) => {
+          if (e.data && e.data.type === "done" && --left === 0) {
+            clearTimeout(timer); resolve();
+          }
+        };
+        w.postMessage({ cmd: "run", id: spec.id, n: warmN });
+      });
+    });
+
+    const rates = [];
+    for (let s = 0; s < samples; s++) {
+      const t0 = now();
+      const done = new Promise((resolve, reject) => {
+        let left = workers.length;
+        const timer = setTimeout(() => reject(new Error("Worker run timeout")), 15000);
+        workers.forEach((w) => {
+          w.onmessage = (e) => {
+            if (e.data && e.data.type === "done") {
+              left--;
+              if (left === 0) { clearTimeout(timer); resolve(); }
+            }
+          };
+        });
+      });
+      workers.forEach((w) => w.postMessage({ cmd:"run", id:spec.id, n }));
+      await done;
+      const sec = (now() - t0) / 1000;
+      const ops = n * threads * spec.ops;
+      rates.push(ops / sec / spec.scale);
+    }
+    return median(rates);
+  } finally {
+    workers.forEach((w) => w.terminate());
+  }
+}
+
+/* ------------------------------- measurement -------------------------------- */
+const state = {
+  running: false,
+  single: {},
+  multi: {},
+  results: [],
+  threads: clamp(navigator.hardwareConcurrency || 4, 1, 8),
+  workerOK: !!workerURL && typeof Worker !== "undefined",
+};
+
+function timeOnce(fn, n) {
+  const t0 = now();
+  const c = fn(n);
+  const t1 = now();
+  return { sec: Math.max(1e-9, (t1 - t0) / 1000), checksum: c };
+}
+
+function calibrate(spec, target = 0.15) {
+  let n = 1 << 18;
+  let sec = 0;
+  for (let i = 0; i < 12; i++) {
+    sec = timeOnce(spec.fn, n).sec;
+    if (sec >= target * 0.75) break;
+    let factor = clamp((target / Math.max(sec, 1e-6)) * 0.9, 1.5, 64);
+    n = Math.min(1 << 28, Math.floor(n * factor));
+  }
+  return { n, sec };
+}
+
+async function measureSingle(spec, n) {
+  // One warm-up, then median of 3 samples.
+  timeOnce(spec.fn, n);
+  const rates = [];
+  for (let i = 0; i < 3; i++) {
+    const r = timeOnce(spec.fn, n);
+    rates.push(n * spec.ops / r.sec / spec.scale);
+    await sleep(10);
+  }
+  return median(rates);
+}
+
+function toMops(spec, rate) {
+  if (spec.unit === "GFLOP/s" || spec.unit === "Gsqrt/s") return rate * 1000;
+  return rate;
+}
+
+function setProgress(p, text) {
+  $("#bar").style.width = `${clamp(p, 0, 1) * 100}%`;
+  if (text) $("#status").textContent = text;
+}
+function setStatus(text) { $("#status").textContent = text; }
+
+async function runAll() {
+  if (state.running) return;
+  state.running = true;
+  state.single = {};
+  state.multi = {};
+  state.results = [];
+  $("#startBtn").disabled = true;
+  $("#copyBtn").disabled = true;
+  $("#shareBtn").disabled = true;
+  $("#summary").style.display = "none";
+  $("#runBadge").style.display = "none";
+  $("#output").style.display = "none";
+  $("#resultsBody").innerHTML = `<tr><td class="name">准备中…</td><td class="dash">—</td><td class="dash">—</td><td class="dash">—</td></tr>`;
+
+  const totalSteps = SPECS.length * (state.workerOK ? 2 : 1) + 1;
+  let step = 0;
+
+  for (const spec of SPECS) {
+    setProgress(step / totalSteps, `校准 ${spec.name}…`);
+    await sleep(20);
+
+    const cal = calibrate(spec);
+    setProgress((step + 0.2) / totalSteps, `单核测试 ${spec.name}…`);
+    const single = await measureSingle(spec, cal.n);
+    state.single[spec.id] = single;
+    step += 0.5;
+
+    let multi = null;
+    if (state.workerOK && state.threads > 1) {
+      setProgress(step / totalSteps, `全核测试 ${spec.name}（${state.threads} 线程）…`);
+      try {
+        multi = await runMulti(spec, cal.n, state.threads, 3);
+        state.multi[spec.id] = multi;
+      } catch (err) {
+        console.warn(err);
+        state.multi[spec.id] = null;
+      }
+    }
+    step += 0.5;
+    state.results.push({ spec, single, multi });
+    renderResults();
+    setProgress(step / totalSteps);
+    await sleep(20);
+  }
+
+  const singleIndex = geo(state.results.map(r => toMops(r.spec, r.single)));
+  const multiRates = state.results.map(r => r.multi == null ? null : toMops(r.spec, r.multi));
+  const hasMulti = multiRates.every(v => v != null);
+  const multiIndex = hasMulti ? geo(multiRates) : 0;
+  const overall = hasMulti ? Math.sqrt(singleIndex * multiIndex) : singleIndex;
+
+  $("#singleIndex").innerHTML = `${fmt(singleIndex, 1)}<small>Mops/s</small>`;
+  $("#multiIndex").innerHTML = hasMulti ? `${fmt(multiIndex, 1)}<small>Mops/s</small>` : `—<small>不可用</small>`;
+  $("#overallIndex").innerHTML = `${fmt(overall, 1)}<small>Mops/s</small>`;
+  $("#summary").style.display = "grid";
+  $("#runBadge").style.display = "inline-flex";
+  $("#startBtn").disabled = false;
+  $("#copyBtn").disabled = false;
+  if (navigator.share) $("#shareBtn").disabled = false;
+  state.running = false;
+  setProgress(1, hasMulti ? "完成。原始吞吐是主结果；综合值是几何平均。" : "完成（多核不可用，只测了单核）。");
+  state.summary = { singleIndex, multiIndex, overall, hasMulti };
+  renderText();
+  try { navigator.vibrate && navigator.vibrate(12); } catch (_) {}
+}
+
+function renderResults() {
+  const rows = state.results.map(r => {
+    const m = r.multi == null ? `<td class="dash">—</td>` : `<td>${fmt(r.multi, 2)}</td>`;
+    return `<tr><td class="name">${r.spec.name}</td><td>${fmt(r.single, 2)}</td>${m}<td>${r.spec.unit}</td></tr>`;
+  });
+  $("#resultsBody").innerHTML = rows.join("");
+}
+
+function summaryText() {
+  if (!state.summary) return "";
+  const lines = [];
+  lines.push("Browser CPU Benchmark");
+  lines.push(`Device: ${$("#devOs").textContent}`);
+  lines.push(`Browser: ${$("#devBrowser").textContent}`);
+  lines.push(`Threads: ${state.threads}`);
+  lines.push("");
+  for (const r of state.results) {
+    lines.push(`${r.spec.name}: single ${fmt(r.single,2)} ${r.spec.unit}` +
+      (r.multi == null ? "" : `, multi ${fmt(r.multi,2)} ${r.spec.unit}`));
+  }
+  lines.push("");
+  lines.push(`Single index: ${fmt(state.summary.singleIndex,1)} Mops/s`);
+  lines.push(state.summary.hasMulti ? `Multi index: ${fmt(state.summary.multiIndex,1)} Mops/s` : "Multi index: n/a");
+  lines.push(`Overall: ${fmt(state.summary.overall,1)} Mops/s`);
+  lines.push("Note: browser JS result; not comparable to native desktop scores.");
+  return lines.join("\n");
+}
+
+function renderText() {
+  const text = summaryText();
+  $("#output").textContent = text;
+  $("#output").style.display = text ? "block" : "none";
+  state.text = text;
+}
+
+async function copyResult() {
+  if (!state.text) return;
+  try {
+    await navigator.clipboard.writeText(state.text);
+    setStatus("结果已复制到剪贴板。");
+  } catch (_) {
+    const ta = document.createElement("textarea");
+    ta.value = state.text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); setStatus("结果已复制。"); }
+    catch (e) { setStatus("复制失败，请手动选择下方文本。"); }
+    ta.remove();
+  }
+}
+
+async function shareResult() {
+  if (!state.text || !navigator.share) return;
+  try { await navigator.share({ title:"Browser CPU Benchmark", text:state.text }); }
+  catch (_) {}
+}
+
+/* ---------------------------------- init ----------------------------------- */
+(function init() {
+  const ua = navigator.userAgent;
+  $("#devOs").textContent = osName(ua);
+  $("#devBrowser").textContent = browserName(ua);
+  $("#devThreads").textContent = `${state.threads}${state.workerOK ? "" : "（Worker 不可用）"}`;
+  $("#devMemory").textContent = navigator.deviceMemory ? `~${navigator.deviceMemory} GB` : "浏览器未提供";
+  $("#browserBadge").textContent = `${osName(ua)} · ${browserName(ua)}`;
+  $("#startBtn").addEventListener("click", () => { runAll().catch(err => { console.error(err); setStatus(`出错：${err.message}`); state.running = false; $("#startBtn").disabled = false; }); });
+  $("#copyBtn").addEventListener("click", copyResult);
+  $("#shareBtn").addEventListener("click", shareResult);
+})();
+</script>
+</body>
+</html>
