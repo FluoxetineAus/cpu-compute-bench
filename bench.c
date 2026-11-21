@@ -37,6 +37,8 @@
 
 #if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
+#elif defined(__aarch64__)
+#include <arm_neon.h>
 #endif
 
 #ifndef BENCH_FLAGS
@@ -231,7 +233,7 @@ typedef double v4d __attribute__((vector_size(32)));
 #define FP64_ACCUM 8
 #endif
 
-#if defined(__AVX2__) && (defined(__x86_64__) || defined(__i386__))
+#if (defined(__AVX2__) && (defined(__x86_64__) || defined(__i386__))) || defined(__aarch64__)
 #define FP64_SQRT_BATCH 32
 #else
 #define FP64_SQRT_BATCH 8
@@ -476,6 +478,64 @@ static NOINLINE uint64_t fp64_sqrt_kernel(uint64_t iters)
     memcpy(&bits, &out, sizeof(bits));
     return bits;
 }
+#elif defined(__aarch64__)
+/*
+ * NEON vector square root: two doubles per instruction, sixteen independent
+ * chains, so this does the same 32 sqrt/iteration as the AVX2 path.  The
+ * instruction count is higher because NEON is 128-bit, which is a real
+ * architectural difference rather than an artificial handicap.
+ */
+static NOINLINE uint64_t fp64_sqrt_kernel(uint64_t iters)
+{
+    float64x2_t a0  = vdupq_n_f64(1.0);
+    float64x2_t a1  = vdupq_n_f64(2.0);
+    float64x2_t a2  = vdupq_n_f64(3.0);
+    float64x2_t a3  = vdupq_n_f64(4.0);
+    float64x2_t a4  = vdupq_n_f64(5.0);
+    float64x2_t a5  = vdupq_n_f64(6.0);
+    float64x2_t a6  = vdupq_n_f64(7.0);
+    float64x2_t a7  = vdupq_n_f64(8.0);
+    float64x2_t a8  = vdupq_n_f64(9.0);
+    float64x2_t a9  = vdupq_n_f64(10.0);
+    float64x2_t a10 = vdupq_n_f64(11.0);
+    float64x2_t a11 = vdupq_n_f64(12.0);
+    float64x2_t a12 = vdupq_n_f64(13.0);
+    float64x2_t a13 = vdupq_n_f64(14.0);
+    float64x2_t a14 = vdupq_n_f64(15.0);
+    float64x2_t a15 = vdupq_n_f64(16.0);
+    const float64x2_t one = vdupq_n_f64(1.0);
+
+    for (uint64_t i = 0; i < iters; i++) {
+        a0  = vsqrtq_f64(vaddq_f64(a0, one));
+        a1  = vsqrtq_f64(vaddq_f64(a1, one));
+        a2  = vsqrtq_f64(vaddq_f64(a2, one));
+        a3  = vsqrtq_f64(vaddq_f64(a3, one));
+        a4  = vsqrtq_f64(vaddq_f64(a4, one));
+        a5  = vsqrtq_f64(vaddq_f64(a5, one));
+        a6  = vsqrtq_f64(vaddq_f64(a6, one));
+        a7  = vsqrtq_f64(vaddq_f64(a7, one));
+        a8  = vsqrtq_f64(vaddq_f64(a8, one));
+        a9  = vsqrtq_f64(vaddq_f64(a9, one));
+        a10 = vsqrtq_f64(vaddq_f64(a10, one));
+        a11 = vsqrtq_f64(vaddq_f64(a11, one));
+        a12 = vsqrtq_f64(vaddq_f64(a12, one));
+        a13 = vsqrtq_f64(vaddq_f64(a13, one));
+        a14 = vsqrtq_f64(vaddq_f64(a14, one));
+        a15 = vsqrtq_f64(vaddq_f64(a15, one));
+    }
+
+    float64x2_t sum = vaddq_f64(
+        vaddq_f64(vaddq_f64(a0, a1), vaddq_f64(a2, a3)),
+        vaddq_f64(vaddq_f64(a4, a5), vaddq_f64(a6, a7)));
+    sum = vaddq_f64(sum, vaddq_f64(
+        vaddq_f64(vaddq_f64(a8, a9), vaddq_f64(a10, a11)),
+        vaddq_f64(vaddq_f64(a12, a13), vaddq_f64(a14, a15))));
+
+    double out = vgetq_lane_f64(sum, 0) + vgetq_lane_f64(sum, 1);
+    uint64_t bits;
+    memcpy(&bits, &out, sizeof(bits));
+    return bits;
+}
 #else
 /*
  * Eight independent scalar square roots.  Each operation is a real hardware
@@ -520,16 +580,17 @@ typedef struct {
     double unit_scale;
     double ref_single;
     double ref_multi;
+    double ref_multi3;
     uint64_t (*fn)(uint64_t);
 } workload_t;
 
 static const workload_t workloads[] = {
-    {"int_add",   "INT64 add",  "Gop/s",    8.0,  1e9, 13.2, 67.4, int_add_kernel},
-    {"int_mul",   "INT64 mul",  "Gop/s",    8.0,  1e9, 3.74, 21.8, int_mul_kernel},
-    {"int_hash",  "INT64 hash", "Mhash/s",  1.0,  1e6, 281.0, 2780.0, int_hash_kernel},
-    {"fp32_fma",  "FP32 FMA",   "GFLOP/s", (double)FP32_ACCUM * (double)FP32_LANES * 2.0, 1e9, 114.0, 588.0, fp32_fma_kernel},
-    {"fp64_fma",  "FP64 FMA",   "GFLOP/s", (double)FP64_ACCUM * (double)FP64_LANES * 2.0, 1e9, 57.0, 271.0, fp64_fma_kernel},
-    {"fp64_sqrt", "FP64 sqrt",  "Gsqrt/s",  (double)FP64_SQRT_BATCH, 1e9, 0.61, 3.65, fp64_sqrt_kernel},
+    {"int_add",   "INT64 add",  "Gop/s",    8.0,  1e9, 13.2, 67.4, 41.8, int_add_kernel},
+    {"int_mul",   "INT64 mul",  "Gop/s",    8.0,  1e9, 3.74, 21.8, 11.8, int_mul_kernel},
+    {"int_hash",  "INT64 hash", "Mhash/s",  1.0,  1e6, 281.0, 2780.0, 893.0, int_hash_kernel},
+    {"fp32_fma",  "FP32 FMA",   "GFLOP/s", (double)FP32_ACCUM * (double)FP32_LANES * 2.0, 1e9, 114.0, 588.0, 342.0, fp32_fma_kernel},
+    {"fp64_fma",  "FP64 FMA",   "GFLOP/s", (double)FP64_ACCUM * (double)FP64_LANES * 2.0, 1e9, 57.0, 271.0, 171.0, fp64_fma_kernel},
+    {"fp64_sqrt", "FP64 sqrt",  "Gsqrt/s",  (double)FP64_SQRT_BATCH, 1e9, 0.61, 3.65, 3.93, fp64_sqrt_kernel},
 };
 
 #define WORKLOAD_COUNT (sizeof(workloads) / sizeof(workloads[0]))
@@ -847,6 +908,7 @@ static void print_usage(const char *argv0)
     printf("  --samples N      samples per test, median is used (default: 3)\n");
     printf("  --quick          fast mode: 0.12 s per sample, 1 sample\n");
     printf("  --pcores         multi-core pass uses performance cores only (Apple Silicon)\n");
+    printf("  --fair3          3-thread fair mode, multi-core normalised to i7 3T baseline\n");
     printf("  --json PATH      also write the results as JSON\n");
     printf("  -h, --help       show this help\n");
     printf("\nOnly CPU compute is measured: no GPU, disk, network or large-array\n");
@@ -874,6 +936,7 @@ int main(int argc, char **argv)
     const char *json_path = NULL;
     int quick = 0;
     int pcores_only = 0;
+    int fair3 = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -883,6 +946,8 @@ int main(int argc, char **argv)
             quick = 1;
         } else if (strcmp(argv[i], "--pcores") == 0) {
             pcores_only = 1;
+        } else if (strcmp(argv[i], "--fair3") == 0) {
+            fair3 = 1;
         } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
             if (parse_positive_int(argv[++i], &threads) != 0 || threads > MAX_THREADS) {
                 fprintf(stderr, "invalid --threads value (1..%d)\n", MAX_THREADS);
@@ -929,7 +994,10 @@ int main(int argc, char **argv)
     if (threads > MAX_THREADS)
         threads = MAX_THREADS;
 
-    if (pcores_only) {
+    if (fair3) {
+        threads = 3;
+        pcores_only = 0;
+    } else if (pcores_only) {
         if (!heterogeneous) {
             fprintf(stderr, "--pcores is only available on heterogeneous Apple Silicon CPUs\n");
             return 2;
@@ -951,14 +1019,17 @@ int main(int argc, char **argv)
     printf("Build      %s\n", BENCH_FLAGS);
     printf("Timer      CLOCK_MONOTONIC, median of %d, %.2f s/sample\n",
            samples, duration);
-    printf("Mode       %s%s\n", quick ? "quick" : "standard",
-           pcores_only ? ", P-cores only" : "");
+    printf("Mode       %s%s%s\n", quick ? "quick" : "standard",
+           pcores_only ? ", P-cores only" : "",
+           fair3 ? ", FAIR 3T" : "");
 #if defined(__APPLE__)
     printf("QoS        USER_INTERACTIVE\n");
 #endif
 #if defined(__APPLE__) && defined(__aarch64__)
     printf("Note       NEON 128-bit build; score reference is Intel AVX2\n");
 #endif
+    if (fair3)
+        printf("Note       FAIR 3T: multi-core reference is i7-9750H 3-thread baseline\n");
     printf("\n");
 
     measurement_t single[WORKLOAD_COUNT];
@@ -1013,7 +1084,7 @@ int main(int argc, char **argv)
     int mt_threads = threads;
 
     if (threads > 1) {
-        printf("Multi-core (%d threads)\n", threads);
+        printf("Multi-core (%d threads%s)\n", threads, fair3 ? ", fair 3T" : "");
         printf("%-14s %16s %14s %10s\n", "TEST", "THROUGHPUT", "REFERENCE", "SCORE");
         printf("------------------------------------------------------------\n");
 
@@ -1034,14 +1105,15 @@ int main(int argc, char **argv)
             }
 
             double rate = median(rates, samples);
-            double score = 1000.0 * rate / w->ref_multi;
+            double mt_ref = fair3 ? w->ref_multi3 : w->ref_multi;
+            double score = 1000.0 * rate / mt_ref;
             multi[wi].rate = rate;
             multi[wi].score = score;
             multi[wi].sec = duration;
             multi[wi].threads = threads;
 
             printf("%-14s %10.2f %-5s %14.2f %10.0f\n",
-                   w->name, rate, w->unit, w->ref_multi, score);
+                   w->name, rate, w->unit, mt_ref, score);
         }
 
         mt_score = 0.0;
@@ -1064,7 +1136,7 @@ int main(int argc, char **argv)
 
     if (threads > 1) {
         printf("------------------------------------------------------------\n");
-        printf("%-14s %38.0f\n", "MULTI SCORE", mt_score);
+        printf("%-14s %38.0f\n", fair3 ? "FAIR 3T SCORE" : "MULTI SCORE", mt_score);
         printf("%-14s %37.2fx\n", "SPEEDUP", parallel_speedup);
         int use_pcore = heterogeneous && threads >= pcores;
         int use_phys = !use_pcore && phys > 0 && threads >= phys;
@@ -1124,6 +1196,7 @@ int main(int argc, char **argv)
                 samples, duration);
         fprintf(fp, "  \"threads\": %d,\n", mt_threads);
         fprintf(fp, "  \"pcores_only\": %s,\n", pcores_only ? "true" : "false");
+        fprintf(fp, "  \"fair3\": %s,\n", fair3 ? "true" : "false");
         fprintf(fp, "  \"scores\": {\"single\": %.2f, \"multi\": %.2f, "
                     "\"overall\": %.2f, \"speedup\": %.4f},\n",
                 st_score, mt_score, overall, parallel_speedup);
@@ -1151,7 +1224,8 @@ int main(int argc, char **argv)
             fprintf(fp, ", \"throughput\": %.4f, \"unit\": ", multi[wi].rate);
             json_escape(fp, w->unit);
             fprintf(fp, ", \"reference\": %.4f, \"score\": %.2f}%s\n",
-                    (mt_threads > 1) ? w->ref_multi : w->ref_single,
+                    (mt_threads > 1) ? (fair3 ? w->ref_multi3 : w->ref_multi)
+                                     : w->ref_single,
                     multi[wi].score,
                     (wi + 1 < WORKLOAD_COUNT) ? "," : "");
         }

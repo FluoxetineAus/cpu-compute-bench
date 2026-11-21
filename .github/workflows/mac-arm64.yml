@@ -57,6 +57,12 @@ jobs:
           ./cpu-bench --samples "${{ github.event.inputs.samples }}" \
             --json "full-${{ matrix.os }}.json"
 
+      - name: Run fair 3-thread comparison
+        run: |
+          set -x
+          ./cpu-bench --fair3 --samples "${{ github.event.inputs.samples }}" \
+            --json "fair3-${{ matrix.os }}.json"
+
       - name: Run P-cores if available
         run: |
           EFF="$(sysctl -n hw.perflevel1.physicalcpu 2>/dev/null || echo 0)"
@@ -82,5 +88,6 @@ jobs:
             quick-*.json
             full-*.json
             pcores-*.json
+            fair3-*.json
             prebuilt-*.json
           if-no-files-found: warn
