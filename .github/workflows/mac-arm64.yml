@@ -1,0 +1,85 @@
+name: mac-arm64-bench
+
+on:
+  workflow_dispatch:
+    inputs:
+      samples:
+        description: Samples per test for the full run
+        required: false
+        default: "5"
+
+jobs:
+  bench:
+    name: ${{ matrix.os }} / ${{ matrix.cpu }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            cpu: apple-m1
+          - os: macos-15
+            cpu: apple-m2
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Machine info
+        run: |
+          set -x
+          uname -a
+          uname -m
+          sysctl -n machdep.cpu.brand_string
+          sysctl -n hw.ncpu
+          sysctl -n hw.physicalcpu
+          sysctl -n hw.perflevel0.physicalcpu || true
+          sysctl -n hw.perflevel1.physicalcpu || true
+          clang --version
+
+      - name: Build native for this runner
+        run: |
+          set -eux
+          clang -O3 -mcpu=${{ matrix.cpu }} \
+            -fno-math-errno -ffp-contract=fast -std=c11 -pthread \
+            -fno-vectorize -fno-slp-vectorize \
+            -DBENCH_FLAGS="\"-O3 -mcpu=${{ matrix.cpu }} (CI)\"" \
+            bench.c -o cpu-bench -lm
+
+      - name: Run quick
+        run: |
+          set -x
+          ./cpu-bench --quick --json "quick-${{ matrix.os }}.json"
+
+      - name: Run full
+        run: |
+          set -x
+          ./cpu-bench --samples "${{ github.event.inputs.samples }}" \
+            --json "full-${{ matrix.os }}.json"
+
+      - name: Run P-cores if available
+        run: |
+          EFF="$(sysctl -n hw.perflevel1.physicalcpu 2>/dev/null || echo 0)"
+          echo "efficiency cores: $EFF"
+          if [ "$EFF" -gt 0 ]; then
+            ./cpu-bench --pcores --samples "${{ github.event.inputs.samples }}" \
+              --json "pcores-${{ matrix.os }}.json"
+          else
+            echo "No heterogeneous P/E perflevels exposed by this VM; skipping --pcores"
+          fi
+
+      - name: Run prebuilt binary
+        run: |
+          set -x
+          chmod +x "cpu-bench-arm64-$( [ "${{ matrix.os }}" = "macos-14" ] && echo m1 || echo m2 )"
+          BIN="cpu-bench-arm64-$( [ "${{ matrix.os }}" = "macos-14" ] && echo m1 || echo m2 )"
+          "./$BIN" --quick --json "prebuilt-${{ matrix.os }}.json"
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ matrix.os }}
+          path: |
+            quick-*.json
+            full-*.json
+            pcores-*.json
+            prebuilt-*.json
+          if-no-files-found: warn
