@@ -99,7 +99,7 @@ a{color:#7dd3fc}
     <section class="card">
       <div class="note">
         <p><b>测什么：</b>整数加法/乘法、串行整数 hash、FP64 融合乘加、FP64 开方。所有热循环只访问局部变量，不测内存带宽、GPU 或网络。</p>
-        <p><b>怎么测：</b>自动校准到约 0.15 秒/次，取 3 次中位数；多核用 Web Worker 并行，线程数取 <code>navigator.hardwareConcurrency</code>，最多 8。</p>
+        <p><b>怎么测：</b>自动校准到约 0.15 秒/次，取 3 次中位数；多核用 Web Worker 并行，线程数取 <code>navigator.hardwareConcurrency</code>，最多 24。</p>
         <p class="warn"><b>注意：</b>这是浏览器 JS 成绩，受 Safari/Chrome JIT、后台标签页、低电量模式和散热影响，<b>不能和原生 Mac/Windows 分数直接比较</b>。跨手机对比也建议用同一浏览器、同一电源状态。</p>
       </div>
     </section>
@@ -325,7 +325,7 @@ const state = {
   single: {},
   multi: {},
   results: [],
-  threads: clamp(navigator.hardwareConcurrency || 4, 1, 8),
+  threads: clamp(navigator.hardwareConcurrency || 4, 1, 24),
   workerOK: !!workerURL && typeof Worker !== "undefined",
 };
 
