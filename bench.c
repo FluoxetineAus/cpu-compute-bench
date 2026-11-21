@@ -566,6 +566,47 @@ static NOINLINE uint64_t fp64_sqrt_kernel(uint64_t iters)
 #endif
 
 /* ------------------------------------------------------------------------- */
+/* Scalar architecture mode (for cross-ISA comparison)                       */
+/* ------------------------------------------------------------------------- */
+
+static NOINLINE uint64_t arch_fp64_fma_kernel(uint64_t iters)
+{
+    double a0 = 1.0, a1 = 1.1, a2 = 1.2, a3 = 1.3;
+    double a4 = 1.4, a5 = 1.5, a6 = 1.6, a7 = 1.7;
+    const double b = 0.999999999, c = 1.0;
+
+    for (uint64_t i = 0; i < iters; i++) {
+        a0 = a0 * b + c; a1 = a1 * b + c;
+        a2 = a2 * b + c; a3 = a3 * b + c;
+        a4 = a4 * b + c; a5 = a5 * b + c;
+        a6 = a6 * b + c; a7 = a7 * b + c;
+        KEEP8D(a0, a1, a2, a3, a4, a5, a6, a7);
+    }
+    double out = a0 + a1 + a2 + a3 + a4 + a5 + a6 + a7;
+    uint64_t bits;
+    memcpy(&bits, &out, sizeof(bits));
+    return bits;
+}
+
+static NOINLINE uint64_t arch_fp64_sqrt_kernel(uint64_t iters)
+{
+    double a0 = 0.1, a1 = 0.2, a2 = 0.3, a3 = 0.4;
+    double a4 = 0.5, a5 = 0.6, a6 = 0.7, a7 = 0.8;
+
+    for (uint64_t i = 0; i < iters; i++) {
+        a0 = __builtin_sqrt(a0 + 1.0); a1 = __builtin_sqrt(a1 + 1.0);
+        a2 = __builtin_sqrt(a2 + 1.0); a3 = __builtin_sqrt(a3 + 1.0);
+        a4 = __builtin_sqrt(a4 + 1.0); a5 = __builtin_sqrt(a5 + 1.0);
+        a6 = __builtin_sqrt(a6 + 1.0); a7 = __builtin_sqrt(a7 + 1.0);
+        KEEP8D(a0, a1, a2, a3, a4, a5, a6, a7);
+    }
+    double out = a0 + a1 + a2 + a3 + a4 + a5 + a6 + a7;
+    uint64_t bits;
+    memcpy(&bits, &out, sizeof(bits));
+    return bits;
+}
+
+/* ------------------------------------------------------------------------- */
 /* Workload table                                                            */
 /*                                                                           */
 /* Reference constants: throughput of the reference machine, in the same unit */
@@ -579,20 +620,29 @@ typedef struct {
     double ops_per_iter;
     double unit_scale;
     double ref_single;
-    double ref_multi;
     uint64_t (*fn)(uint64_t);
 } workload_t;
 
 static const workload_t workloads[] = {
-    {"int_add",   "INT64 add",  "Gop/s",    8.0,  1e9, 13.2, 67.4, int_add_kernel},
-    {"int_mul",   "INT64 mul",  "Gop/s",    8.0,  1e9, 3.74, 21.8, int_mul_kernel},
-    {"int_hash",  "INT64 hash", "Mhash/s",  1.0,  1e6, 281.0, 2780.0, int_hash_kernel},
-    {"fp32_fma",  "FP32 FMA",   "GFLOP/s", (double)FP32_ACCUM * (double)FP32_LANES * 2.0, 1e9, 114.0, 588.0, fp32_fma_kernel},
-    {"fp64_fma",  "FP64 FMA",   "GFLOP/s", (double)FP64_ACCUM * (double)FP64_LANES * 2.0, 1e9, 57.0, 271.0, fp64_fma_kernel},
-    {"fp64_sqrt", "FP64 sqrt",  "Gsqrt/s",  (double)FP64_SQRT_BATCH, 1e9, 0.61, 3.65, fp64_sqrt_kernel},
+    {"int_add",   "INT64 add",  "Gop/s",    8.0,  1e9, 14.4, int_add_kernel},
+    {"int_mul",   "INT64 mul",  "Gop/s",    8.0,  1e9, 4.28, int_mul_kernel},
+    {"int_hash",  "INT64 hash", "Mhash/s",  1.0,  1e6, 327.0, int_hash_kernel},
+    {"fp32_fma",  "FP32 FMA",   "GFLOP/s", (double)FP32_ACCUM * (double)FP32_LANES * 2.0, 1e9, 137.0, fp32_fma_kernel},
+    {"fp64_fma",  "FP64 FMA",   "GFLOP/s", (double)FP64_ACCUM * (double)FP64_LANES * 2.0, 1e9, 67.0, fp64_fma_kernel},
+    {"fp64_sqrt", "FP64 sqrt",  "Gsqrt/s",  (double)FP64_SQRT_BATCH, 1e9, 1.40, fp64_sqrt_kernel},
 };
 
 #define WORKLOAD_COUNT (sizeof(workloads) / sizeof(workloads[0]))
+
+/* Separate scalar table for --arch; constants are calibrated to this i7. */
+static const workload_t arch_workloads[] = {
+    {"int_add",  "INT64 add", "Gop/s",    8.0, 1e9, 14.0, int_add_kernel},
+    {"int_mul",  "INT64 mul", "Gop/s",    8.0, 1e9, 3.95, int_mul_kernel},
+    {"int_hash", "INT64 hash","Mhash/s",  1.0, 1e6, 298.0, int_hash_kernel},
+    {"fp64_fma", "FP64 FMA",  "GFLOP/s", 16.0, 1e9, 15.8, arch_fp64_fma_kernel},
+    {"fp64_sqrt","FP64 sqrt", "Gsqrt/s",  8.0, 1e9, 0.66, arch_fp64_sqrt_kernel},
+};
+#define ARCH_COUNT (sizeof(arch_workloads) / sizeof(arch_workloads[0]))
 
 /* ------------------------------------------------------------------------- */
 /* Threaded execution                                                        */
@@ -907,6 +957,7 @@ static void print_usage(const char *argv0)
     printf("  --samples N      samples per test, median is used (default: 3)\n");
     printf("  --quick          fast mode: 0.12 s per sample, 1 sample\n");
     printf("  --pcores         multi-core pass uses performance cores only (Apple Silicon)\n");
+    printf("  --arch           scalar 1-thread architecture comparison mode\n");
     printf("  --json PATH      also write the results as JSON\n");
     printf("  -h, --help       show this help\n");
     printf("\nOnly CPU compute is measured: no GPU, disk, network or large-array\n");
@@ -934,6 +985,7 @@ int main(int argc, char **argv)
     const char *json_path = NULL;
     int quick = 0;
     int pcores_only = 0;
+    int arch_mode = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -943,6 +995,8 @@ int main(int argc, char **argv)
             quick = 1;
         } else if (strcmp(argv[i], "--pcores") == 0) {
             pcores_only = 1;
+        } else if (strcmp(argv[i], "--arch") == 0) {
+            arch_mode = 1;
 
         } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
             if (parse_positive_int(argv[++i], &threads) != 0 || threads > MAX_THREADS) {
@@ -996,6 +1050,101 @@ int main(int argc, char **argv)
             return 2;
         }
         threads = pcores;
+    }
+
+    if (arch_mode) {
+        printf("CPU Compute Benchmark " BENCH_VERSION "\n");
+        printf("============================================================\n");
+        printf("CPU        %s\n", cpu);
+        if (heterogeneous)
+            printf("Cores      %d performance + %d efficiency / %d logical\n",
+                   pcores, ecores, logical);
+        else if (phys > 0)
+            printf("Cores      %d physical / %d logical\n", phys, logical);
+        else
+            printf("Cores      %d logical\n", logical);
+        printf("Compiler   %s (%s)\n", compiler_name(), simd_name());
+        printf("Build      %s\n", BENCH_FLAGS);
+        printf("Timer      CLOCK_MONOTONIC, median of %d, %.2f s/sample\n",
+               samples, duration);
+        printf("Mode       ARCH, scalar 1 thread\n");
+#if defined(__APPLE__)
+        printf("QoS        USER_INTERACTIVE\n");
+#endif
+        printf("Note       cross-ISA scalar workload: no SIMD, same ops on both\n\n");
+
+        double arch_scores[ARCH_COUNT];
+        double arch_rates[ARCH_COUNT];
+        printf("Single-thread scalar\n");
+        printf("%-14s %16s %14s %10s\n", "TEST", "THROUGHPUT", "REFERENCE", "SCORE");
+        printf("------------------------------------------------------------\n");
+        for (size_t wi = 0; wi < ARCH_COUNT; wi++) {
+            const workload_t *w = &arch_workloads[wi];
+            uint64_t iters = calibrate(w->fn, 1, duration);
+            double rates[31];
+            uint64_t checksum = 0;
+            for (int s = 0; s < samples; s++) {
+                double sec = run_once(w->fn, iters, 1, &checksum);
+                if (sec <= 0.0) {
+                    fprintf(stderr, "timer failure\n");
+                    return 1;
+                }
+                double ops = (double)iters * w->ops_per_iter;
+                rates[s] = ops / sec / w->unit_scale;
+            }
+            double rate = median(rates, samples);
+            double score = 1000.0 * rate / w->ref_single;
+            arch_rates[wi] = rate;
+            arch_scores[wi] = score;
+            printf("%-14s %10.2f %-5s %14.2f %10.0f\n",
+                   w->name, rate, w->unit, w->ref_single, score);
+        }
+        double arch_score_sum = 0.0;
+        for (size_t wi = 0; wi < ARCH_COUNT; wi++)
+            arch_score_sum += log(arch_scores[wi]);
+        double arch_score = exp(arch_score_sum / (double)ARCH_COUNT);
+        printf("------------------------------------------------------------\n");
+        printf("%-14s %38.0f\n", "ARCH SCORE", arch_score);
+        printf("============================================================\n");
+        printf("Scalar single-thread score; comparable across x86 and ARM.\n");
+        printf("Use the default native mode for AVX2/NEON throughput.\n");
+
+        if (json_path) {
+            FILE *fp = fopen(json_path, "w");
+            if (!fp) {
+                fprintf(stderr, "cannot write %s: %s\n", json_path, strerror(errno));
+                return 1;
+            }
+            time_t now = time(NULL);
+            struct tm tmv;
+            struct tm *tmp = localtime(&now);
+            char stamp[64] = "";
+            if (tmp) tmv = *tmp; else memset(&tmv, 0, sizeof(tmv));
+            strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%S", &tmv);
+            fprintf(fp, "{\n  \"version\": \"%s\",\n  \"mode\": \"arch\",\n", BENCH_VERSION);
+            fprintf(fp, "  \"timestamp\": "); json_escape(fp, stamp);
+            fprintf(fp, ",\n  \"cpu\": "); json_escape(fp, cpu);
+            fprintf(fp, ",\n  \"physical_cores\": %d,\n  \"logical_cores\": %d,\n", phys, logical);
+            fprintf(fp, "  \"compiler\": "); json_escape(fp, compiler_name());
+            fprintf(fp, ",\n  \"build_flags\": "); json_escape(fp, BENCH_FLAGS);
+            fprintf(fp, ",\n  \"samples\": %d,\n  \"duration_sec\": %.6f,\n", samples, duration);
+            fprintf(fp, "  \"scores\": {\"arch\": %.2f, \"overall\": %.2f},\n", arch_score, arch_score);
+            fprintf(fp, "  \"arch_core\": [\n");
+            for (size_t wi = 0; wi < ARCH_COUNT; wi++) {
+                const workload_t *w = &arch_workloads[wi];
+                fprintf(fp, "    {\"id\": "); json_escape(fp, w->id);
+                fprintf(fp, ", \"name\": "); json_escape(fp, w->name);
+                fprintf(fp, ", \"throughput\": %.4f, \"unit\": ", arch_rates[wi]);
+                json_escape(fp, w->unit);
+                fprintf(fp, ", \"reference\": %.4f, \"score\": %.2f}%s\n",
+                        w->ref_single, arch_scores[wi],
+                        (wi + 1 < ARCH_COUNT) ? "," : "");
+            }
+            fprintf(fp, "  ]\n}\n");
+            fclose(fp);
+            printf("\nJSON written to %s\n", json_path);
+        }
+        return 0;
     }
 
     printf("CPU Compute Benchmark " BENCH_VERSION "\n");
@@ -1095,7 +1244,7 @@ int main(int argc, char **argv)
             }
 
             double rate = median(rates, samples);
-            double mt_ref = w->ref_multi;
+            double mt_ref = w->ref_single;
             double score = 1000.0 * rate / mt_ref;
             multi[wi].rate = rate;
             multi[wi].score = score;
@@ -1127,7 +1276,7 @@ int main(int argc, char **argv)
     if (threads > 1) {
         printf("------------------------------------------------------------\n");
         printf("%-14s %38.0f\n", "MULTI SCORE", mt_score);
-        printf("%-14s %37.2fx\n", "SPEEDUP", parallel_speedup);
+        printf("%-14s %37.2fx\n", "MULTI SCALE", parallel_speedup);
         int use_pcore = heterogeneous && threads >= pcores;
         int use_phys = !use_pcore && phys > 0 && threads >= phys;
         double eff_base = use_pcore ? (double)pcores
@@ -1213,7 +1362,7 @@ int main(int argc, char **argv)
             fprintf(fp, ", \"throughput\": %.4f, \"unit\": ", multi[wi].rate);
             json_escape(fp, w->unit);
             fprintf(fp, ", \"reference\": %.4f, \"score\": %.2f}%s\n",
-                    (mt_threads > 1) ? w->ref_multi : w->ref_single,
+                    w->ref_single,
                     multi[wi].score,
                     (wi + 1 < WORKLOAD_COUNT) ? "," : "");
         }

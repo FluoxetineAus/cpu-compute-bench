@@ -57,6 +57,12 @@ jobs:
           ./cpu-bench --samples "${{ github.event.inputs.samples }}" \
             --json "full-${{ matrix.os }}.json"
 
+      - name: Run cross-ISA scalar mode
+        run: |
+          set -x
+          ./cpu-bench --arch --samples "${{ github.event.inputs.samples }}" \
+            --json "arch-${{ matrix.os }}.json"
+
       - name: Run P-cores if available
         run: |
           EFF="$(sysctl -n hw.perflevel1.physicalcpu 2>/dev/null || echo 0)"
@@ -82,5 +88,6 @@ jobs:
             quick-*.json
             full-*.json
             pcores-*.json
+            arch-*.json
             prebuilt-*.json
           if-no-files-found: warn
