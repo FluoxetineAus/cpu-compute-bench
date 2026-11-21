@@ -45,7 +45,7 @@
 #define BENCH_FLAGS "unknown"
 #endif
 
-#define BENCH_VERSION "1.1"
+#define BENCH_VERSION "2.0"
 #define MAX_THREADS 256
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -580,17 +580,16 @@ typedef struct {
     double unit_scale;
     double ref_single;
     double ref_multi;
-    double ref_multi3;
     uint64_t (*fn)(uint64_t);
 } workload_t;
 
 static const workload_t workloads[] = {
-    {"int_add",   "INT64 add",  "Gop/s",    8.0,  1e9, 13.2, 67.4, 41.8, int_add_kernel},
-    {"int_mul",   "INT64 mul",  "Gop/s",    8.0,  1e9, 3.74, 21.8, 11.8, int_mul_kernel},
-    {"int_hash",  "INT64 hash", "Mhash/s",  1.0,  1e6, 281.0, 2780.0, 893.0, int_hash_kernel},
-    {"fp32_fma",  "FP32 FMA",   "GFLOP/s", (double)FP32_ACCUM * (double)FP32_LANES * 2.0, 1e9, 114.0, 588.0, 342.0, fp32_fma_kernel},
-    {"fp64_fma",  "FP64 FMA",   "GFLOP/s", (double)FP64_ACCUM * (double)FP64_LANES * 2.0, 1e9, 57.0, 271.0, 171.0, fp64_fma_kernel},
-    {"fp64_sqrt", "FP64 sqrt",  "Gsqrt/s",  (double)FP64_SQRT_BATCH, 1e9, 0.61, 3.65, 3.93, fp64_sqrt_kernel},
+    {"int_add",   "INT64 add",  "Gop/s",    8.0,  1e9, 13.2, 67.4, int_add_kernel},
+    {"int_mul",   "INT64 mul",  "Gop/s",    8.0,  1e9, 3.74, 21.8, int_mul_kernel},
+    {"int_hash",  "INT64 hash", "Mhash/s",  1.0,  1e6, 281.0, 2780.0, int_hash_kernel},
+    {"fp32_fma",  "FP32 FMA",   "GFLOP/s", (double)FP32_ACCUM * (double)FP32_LANES * 2.0, 1e9, 114.0, 588.0, fp32_fma_kernel},
+    {"fp64_fma",  "FP64 FMA",   "GFLOP/s", (double)FP64_ACCUM * (double)FP64_LANES * 2.0, 1e9, 57.0, 271.0, fp64_fma_kernel},
+    {"fp64_sqrt", "FP64 sqrt",  "Gsqrt/s",  (double)FP64_SQRT_BATCH, 1e9, 0.61, 3.65, fp64_sqrt_kernel},
 };
 
 #define WORKLOAD_COUNT (sizeof(workloads) / sizeof(workloads[0]))
@@ -908,7 +907,6 @@ static void print_usage(const char *argv0)
     printf("  --samples N      samples per test, median is used (default: 3)\n");
     printf("  --quick          fast mode: 0.12 s per sample, 1 sample\n");
     printf("  --pcores         multi-core pass uses performance cores only (Apple Silicon)\n");
-    printf("  --fair3          3-thread fair mode, multi-core normalised to i7 3T baseline\n");
     printf("  --json PATH      also write the results as JSON\n");
     printf("  -h, --help       show this help\n");
     printf("\nOnly CPU compute is measured: no GPU, disk, network or large-array\n");
@@ -936,7 +934,6 @@ int main(int argc, char **argv)
     const char *json_path = NULL;
     int quick = 0;
     int pcores_only = 0;
-    int fair3 = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -946,8 +943,7 @@ int main(int argc, char **argv)
             quick = 1;
         } else if (strcmp(argv[i], "--pcores") == 0) {
             pcores_only = 1;
-        } else if (strcmp(argv[i], "--fair3") == 0) {
-            fair3 = 1;
+
         } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
             if (parse_positive_int(argv[++i], &threads) != 0 || threads > MAX_THREADS) {
                 fprintf(stderr, "invalid --threads value (1..%d)\n", MAX_THREADS);
@@ -994,10 +990,7 @@ int main(int argc, char **argv)
     if (threads > MAX_THREADS)
         threads = MAX_THREADS;
 
-    if (fair3) {
-        threads = 3;
-        pcores_only = 0;
-    } else if (pcores_only) {
+    if (pcores_only) {
         if (!heterogeneous) {
             fprintf(stderr, "--pcores is only available on heterogeneous Apple Silicon CPUs\n");
             return 2;
@@ -1019,17 +1012,14 @@ int main(int argc, char **argv)
     printf("Build      %s\n", BENCH_FLAGS);
     printf("Timer      CLOCK_MONOTONIC, median of %d, %.2f s/sample\n",
            samples, duration);
-    printf("Mode       %s%s%s\n", quick ? "quick" : "standard",
-           pcores_only ? ", P-cores only" : "",
-           fair3 ? ", FAIR 3T" : "");
+    printf("Mode       %s%s\n", quick ? "quick" : "standard",
+           pcores_only ? ", P-cores only" : "");
 #if defined(__APPLE__)
     printf("QoS        USER_INTERACTIVE\n");
 #endif
 #if defined(__APPLE__) && defined(__aarch64__)
     printf("Note       NEON 128-bit build; score reference is Intel AVX2\n");
 #endif
-    if (fair3)
-        printf("Note       FAIR 3T: multi-core reference is i7-9750H 3-thread baseline\n");
     printf("\n");
 
     measurement_t single[WORKLOAD_COUNT];
@@ -1084,7 +1074,7 @@ int main(int argc, char **argv)
     int mt_threads = threads;
 
     if (threads > 1) {
-        printf("Multi-core (%d threads%s)\n", threads, fair3 ? ", fair 3T" : "");
+        printf("Multi-core (%d threads)\n", threads);
         printf("%-14s %16s %14s %10s\n", "TEST", "THROUGHPUT", "REFERENCE", "SCORE");
         printf("------------------------------------------------------------\n");
 
@@ -1105,7 +1095,7 @@ int main(int argc, char **argv)
             }
 
             double rate = median(rates, samples);
-            double mt_ref = fair3 ? w->ref_multi3 : w->ref_multi;
+            double mt_ref = w->ref_multi;
             double score = 1000.0 * rate / mt_ref;
             multi[wi].rate = rate;
             multi[wi].score = score;
@@ -1136,7 +1126,7 @@ int main(int argc, char **argv)
 
     if (threads > 1) {
         printf("------------------------------------------------------------\n");
-        printf("%-14s %38.0f\n", fair3 ? "FAIR 3T SCORE" : "MULTI SCORE", mt_score);
+        printf("%-14s %38.0f\n", "MULTI SCORE", mt_score);
         printf("%-14s %37.2fx\n", "SPEEDUP", parallel_speedup);
         int use_pcore = heterogeneous && threads >= pcores;
         int use_phys = !use_pcore && phys > 0 && threads >= phys;
@@ -1196,7 +1186,6 @@ int main(int argc, char **argv)
                 samples, duration);
         fprintf(fp, "  \"threads\": %d,\n", mt_threads);
         fprintf(fp, "  \"pcores_only\": %s,\n", pcores_only ? "true" : "false");
-        fprintf(fp, "  \"fair3\": %s,\n", fair3 ? "true" : "false");
         fprintf(fp, "  \"scores\": {\"single\": %.2f, \"multi\": %.2f, "
                     "\"overall\": %.2f, \"speedup\": %.4f},\n",
                 st_score, mt_score, overall, parallel_speedup);
@@ -1224,8 +1213,7 @@ int main(int argc, char **argv)
             fprintf(fp, ", \"throughput\": %.4f, \"unit\": ", multi[wi].rate);
             json_escape(fp, w->unit);
             fprintf(fp, ", \"reference\": %.4f, \"score\": %.2f}%s\n",
-                    (mt_threads > 1) ? (fair3 ? w->ref_multi3 : w->ref_multi)
-                                     : w->ref_single,
+                    (mt_threads > 1) ? w->ref_multi : w->ref_single,
                     multi[wi].score,
                     (wi + 1 < WORKLOAD_COUNT) ? "," : "");
         }
