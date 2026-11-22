@@ -948,6 +948,47 @@ typedef struct {
     int threads;
 } measurement_t;
 
+static double g_arch_rates[ARCH_COUNT];
+static double g_arch_scores[ARCH_COUNT];
+static double g_arch_score;
+
+static void run_arch_suite(int samples, double duration)
+{
+    printf("Cross-architecture scalar (1 thread)\n");
+    printf("%-14s %16s %14s %10s\n", "TEST", "THROUGHPUT", "REFERENCE", "SCORE");
+    printf("------------------------------------------------------------\n");
+    for (size_t wi = 0; wi < ARCH_COUNT; wi++) {
+        const workload_t *w = &arch_workloads[wi];
+        uint64_t iters = calibrate(w->fn, 1, duration);
+        double rates[31];
+        uint64_t checksum = 0;
+        for (int s = 0; s < samples; s++) {
+            double sec = run_once(w->fn, iters, 1, &checksum);
+            if (sec <= 0.0) {
+                fprintf(stderr, "timer failure\n");
+                exit(1);
+            }
+            double ops = (double)iters * w->ops_per_iter;
+            rates[s] = ops / sec / w->unit_scale;
+        }
+        double rate = median(rates, samples);
+        double score = 1000.0 * rate / w->ref_single;
+        g_arch_rates[wi] = rate;
+        g_arch_scores[wi] = score;
+        printf("%-14s %10.2f %-5s %14.2f %10.0f\n",
+               w->name, rate, w->unit, w->ref_single, score);
+    }
+    double sum = 0.0;
+    for (size_t wi = 0; wi < ARCH_COUNT; wi++)
+        sum += log(g_arch_scores[wi]);
+    g_arch_score = exp(sum / (double)ARCH_COUNT);
+    printf("------------------------------------------------------------\n");
+    printf("%-14s %38.0f\n", "ARCH SCORE", g_arch_score);
+    printf("============================================================\n");
+    printf("ARCH: scalar 1T, same instruction mix across x86/ARM.\n");
+    printf("Use NATIVE for AVX2/NEON throughput and SYSTEM for all-core.\n");
+}
+
 static void print_usage(const char *argv0)
 {
     printf("CPU Compute Benchmark " BENCH_VERSION "\n\n");
@@ -957,7 +998,6 @@ static void print_usage(const char *argv0)
     printf("  --samples N      samples per test, median is used (default: 3)\n");
     printf("  --quick          fast mode: 0.12 s per sample, 1 sample\n");
     printf("  --pcores         multi-core pass uses performance cores only (Apple Silicon)\n");
-    printf("  --arch           scalar 1-thread architecture comparison mode\n");
     printf("  --json PATH      also write the results as JSON\n");
     printf("  -h, --help       show this help\n");
     printf("\nOnly CPU compute is measured: no GPU, disk, network or large-array\n");
@@ -985,7 +1025,6 @@ int main(int argc, char **argv)
     const char *json_path = NULL;
     int quick = 0;
     int pcores_only = 0;
-    int arch_mode = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -995,9 +1034,6 @@ int main(int argc, char **argv)
             quick = 1;
         } else if (strcmp(argv[i], "--pcores") == 0) {
             pcores_only = 1;
-        } else if (strcmp(argv[i], "--arch") == 0) {
-            arch_mode = 1;
-
         } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
             if (parse_positive_int(argv[++i], &threads) != 0 || threads > MAX_THREADS) {
                 fprintf(stderr, "invalid --threads value (1..%d)\n", MAX_THREADS);
@@ -1050,101 +1086,6 @@ int main(int argc, char **argv)
             return 2;
         }
         threads = pcores;
-    }
-
-    if (arch_mode) {
-        printf("CPU Compute Benchmark " BENCH_VERSION "\n");
-        printf("============================================================\n");
-        printf("CPU        %s\n", cpu);
-        if (heterogeneous)
-            printf("Cores      %d performance + %d efficiency / %d logical\n",
-                   pcores, ecores, logical);
-        else if (phys > 0)
-            printf("Cores      %d physical / %d logical\n", phys, logical);
-        else
-            printf("Cores      %d logical\n", logical);
-        printf("Compiler   %s (%s)\n", compiler_name(), simd_name());
-        printf("Build      %s\n", BENCH_FLAGS);
-        printf("Timer      CLOCK_MONOTONIC, median of %d, %.2f s/sample\n",
-               samples, duration);
-        printf("Mode       ARCH, scalar 1 thread\n");
-#if defined(__APPLE__)
-        printf("QoS        USER_INTERACTIVE\n");
-#endif
-        printf("Note       cross-ISA scalar workload: no SIMD, same ops on both\n\n");
-
-        double arch_scores[ARCH_COUNT];
-        double arch_rates[ARCH_COUNT];
-        printf("Single-thread scalar\n");
-        printf("%-14s %16s %14s %10s\n", "TEST", "THROUGHPUT", "REFERENCE", "SCORE");
-        printf("------------------------------------------------------------\n");
-        for (size_t wi = 0; wi < ARCH_COUNT; wi++) {
-            const workload_t *w = &arch_workloads[wi];
-            uint64_t iters = calibrate(w->fn, 1, duration);
-            double rates[31];
-            uint64_t checksum = 0;
-            for (int s = 0; s < samples; s++) {
-                double sec = run_once(w->fn, iters, 1, &checksum);
-                if (sec <= 0.0) {
-                    fprintf(stderr, "timer failure\n");
-                    return 1;
-                }
-                double ops = (double)iters * w->ops_per_iter;
-                rates[s] = ops / sec / w->unit_scale;
-            }
-            double rate = median(rates, samples);
-            double score = 1000.0 * rate / w->ref_single;
-            arch_rates[wi] = rate;
-            arch_scores[wi] = score;
-            printf("%-14s %10.2f %-5s %14.2f %10.0f\n",
-                   w->name, rate, w->unit, w->ref_single, score);
-        }
-        double arch_score_sum = 0.0;
-        for (size_t wi = 0; wi < ARCH_COUNT; wi++)
-            arch_score_sum += log(arch_scores[wi]);
-        double arch_score = exp(arch_score_sum / (double)ARCH_COUNT);
-        printf("------------------------------------------------------------\n");
-        printf("%-14s %38.0f\n", "ARCH SCORE", arch_score);
-        printf("============================================================\n");
-        printf("Scalar single-thread score; comparable across x86 and ARM.\n");
-        printf("Use the default native mode for AVX2/NEON throughput.\n");
-
-        if (json_path) {
-            FILE *fp = fopen(json_path, "w");
-            if (!fp) {
-                fprintf(stderr, "cannot write %s: %s\n", json_path, strerror(errno));
-                return 1;
-            }
-            time_t now = time(NULL);
-            struct tm tmv;
-            struct tm *tmp = localtime(&now);
-            char stamp[64] = "";
-            if (tmp) tmv = *tmp; else memset(&tmv, 0, sizeof(tmv));
-            strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%S", &tmv);
-            fprintf(fp, "{\n  \"version\": \"%s\",\n  \"mode\": \"arch\",\n", BENCH_VERSION);
-            fprintf(fp, "  \"timestamp\": "); json_escape(fp, stamp);
-            fprintf(fp, ",\n  \"cpu\": "); json_escape(fp, cpu);
-            fprintf(fp, ",\n  \"physical_cores\": %d,\n  \"logical_cores\": %d,\n", phys, logical);
-            fprintf(fp, "  \"compiler\": "); json_escape(fp, compiler_name());
-            fprintf(fp, ",\n  \"build_flags\": "); json_escape(fp, BENCH_FLAGS);
-            fprintf(fp, ",\n  \"samples\": %d,\n  \"duration_sec\": %.6f,\n", samples, duration);
-            fprintf(fp, "  \"scores\": {\"arch\": %.2f, \"overall\": %.2f},\n", arch_score, arch_score);
-            fprintf(fp, "  \"arch_core\": [\n");
-            for (size_t wi = 0; wi < ARCH_COUNT; wi++) {
-                const workload_t *w = &arch_workloads[wi];
-                fprintf(fp, "    {\"id\": "); json_escape(fp, w->id);
-                fprintf(fp, ", \"name\": "); json_escape(fp, w->name);
-                fprintf(fp, ", \"throughput\": %.4f, \"unit\": ", arch_rates[wi]);
-                json_escape(fp, w->unit);
-                fprintf(fp, ", \"reference\": %.4f, \"score\": %.2f}%s\n",
-                        w->ref_single, arch_scores[wi],
-                        (wi + 1 < ARCH_COUNT) ? "," : "");
-            }
-            fprintf(fp, "  ]\n}\n");
-            fclose(fp);
-            printf("\nJSON written to %s\n", json_path);
-        }
-        return 0;
     }
 
     printf("CPU Compute Benchmark " BENCH_VERSION "\n");
@@ -1296,6 +1237,8 @@ int main(int argc, char **argv)
     printf("Reference machine: Intel Core i7-9750H, 6C/12T, see README.md\n");
     printf("Higher is better. Raw throughput is the primary result; the\n");
     printf("score is a geometric mean normalised to the reference machine.\n");
+    printf("\n");
+    run_arch_suite(samples, duration);
 
     /* ---- JSON ---- */
     if (json_path) {
@@ -1317,6 +1260,7 @@ int main(int argc, char **argv)
 
         fprintf(fp, "{\n");
         fprintf(fp, "  \"version\": \"%s\",\n", BENCH_VERSION);
+        fprintf(fp, "  \"mode\": \"native+arch\",\n");
         fprintf(fp, "  \"timestamp\": ");
         json_escape(fp, stamp);
         fprintf(fp, ",\n  \"cpu\": ");
@@ -1335,9 +1279,9 @@ int main(int argc, char **argv)
                 samples, duration);
         fprintf(fp, "  \"threads\": %d,\n", mt_threads);
         fprintf(fp, "  \"pcores_only\": %s,\n", pcores_only ? "true" : "false");
-        fprintf(fp, "  \"scores\": {\"single\": %.2f, \"multi\": %.2f, "
-                    "\"overall\": %.2f, \"speedup\": %.4f},\n",
-                st_score, mt_score, overall, parallel_speedup);
+        fprintf(fp, "  \"scores\": {\"arch\": %.2f, \"single\": %.2f, "
+                    "\"multi\": %.2f, \"overall\": %.2f, \"speedup\": %.4f},\n",
+                g_arch_score, st_score, mt_score, overall, parallel_speedup);
 
         fprintf(fp, "  \"single_core\": [\n");
         for (size_t wi = 0; wi < WORKLOAD_COUNT; wi++) {
@@ -1365,6 +1309,17 @@ int main(int argc, char **argv)
                     w->ref_single,
                     multi[wi].score,
                     (wi + 1 < WORKLOAD_COUNT) ? "," : "");
+        }
+        fprintf(fp, "  ],\n  \"arch_core\": [\n");
+        for (size_t wi = 0; wi < ARCH_COUNT; wi++) {
+            const workload_t *w = &arch_workloads[wi];
+            fprintf(fp, "    {\"id\": "); json_escape(fp, w->id);
+            fprintf(fp, ", \"name\": "); json_escape(fp, w->name);
+            fprintf(fp, ", \"throughput\": %.4f, \"unit\": ", g_arch_rates[wi]);
+            json_escape(fp, w->unit);
+            fprintf(fp, ", \"reference\": %.4f, \"score\": %.2f}%s\n",
+                    w->ref_single, g_arch_scores[wi],
+                    (wi + 1 < ARCH_COUNT) ? "," : "");
         }
         fprintf(fp, "  ]\n}\n");
         fclose(fp);

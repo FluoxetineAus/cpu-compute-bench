@@ -21,7 +21,6 @@ jobs:
           # macos-15 currently provisions a 3-vCPU Apple M1 (Virtual) runner.
           - os: macos-15
             cpu: apple-m1
-            prebuilt: cpu-bench-arm64-m1
     steps:
       - uses: actions/checkout@v4
 
@@ -37,14 +36,11 @@ jobs:
           sysctl -n hw.perflevel1.physicalcpu || true
           clang --version
 
-      - name: Build native for this runner
+      - name: Build all modules
         run: |
           set -eux
-          clang -O3 -mcpu=${{ matrix.cpu }} \
-            -fno-math-errno -ffp-contract=fast -std=c11 -pthread \
-            -fno-vectorize -fno-slp-vectorize \
-            -DBENCH_FLAGS="\"-O3 -mcpu=${{ matrix.cpu }} (CI)\"" \
-            bench.c -o cpu-bench -lm
+          make clean
+          make
 
       - name: Run quick
         run: |
@@ -60,15 +56,14 @@ jobs:
       - name: Run Application benchmark
         run: |
           set -x
-          cc -O3 -std=c11 application/application_bench.c -o application-bench -lm
-          ./application-bench --samples "${{ github.event.inputs.samples }}" \
+          ./application/application-bench --samples "${{ github.event.inputs.samples }}" \
             --json "application-${{ matrix.os }}.json"
 
-      - name: Run cross-ISA scalar mode
+      - name: Run Memory benchmark
         run: |
           set -x
-          ./cpu-bench --arch --samples "${{ github.event.inputs.samples }}" \
-            --json "arch-${{ matrix.os }}.json"
+          ./memory/memory-bench --samples "${{ github.event.inputs.samples }}" \
+            --json "memory-${{ matrix.os }}.json"
 
       - name: Run P-cores if available
         run: |
@@ -81,12 +76,6 @@ jobs:
             echo "No heterogeneous P/E perflevels exposed by this VM; skipping --pcores"
           fi
 
-      - name: Run prebuilt binary
-        run: |
-          set -x
-          chmod +x "${{ matrix.prebuilt }}"
-          "./${{ matrix.prebuilt }}" --quick --json "prebuilt-${{ matrix.os }}.json"
-
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
@@ -95,7 +84,6 @@ jobs:
             quick-*.json
             full-*.json
             pcores-*.json
-            arch-*.json
             application-*.json
-            prebuilt-*.json
+            memory-*.json
           if-no-files-found: warn

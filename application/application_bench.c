@@ -33,7 +33,7 @@
 #endif
 #endif
 
-#define APP_VERSION "1.0"
+#define APP_VERSION "2.0"
 #define MAX_SAMPLES 15
 #define MAX_THREADS 24
 
@@ -295,7 +295,6 @@ static uint8_t *copy_a;
 static const size_t COPY_SIZE = 16u * 1024u * 1024u;
 
 static worker_ctx *workers;
-static int worker_count;
 
 /* ------------------------------------------------------------------ prepare */
 static void prepare_all(int nthreads)
@@ -361,7 +360,6 @@ static void prepare_all(int nthreads)
     copy_a = xalloc(COPY_SIZE);
     for (size_t i = 0; i < COPY_SIZE; i++) copy_a[i] = (uint8_t)i;
 
-    worker_count = nthreads;
     workers = calloc((size_t)nthreads, sizeof(worker_ctx));
     if (!workers) { fprintf(stderr, "worker alloc failed\n"); exit(1); }
     for (int t = 0; t < nthreads; t++) {
@@ -722,11 +720,12 @@ static double time_task(const app_task *t, int threads, int reps)
     }
 
     thread_arg args[MAX_THREADS];
-    void *handles[MAX_THREADS];
-    volatile int go = 0;
 #if defined(_WIN32)
     HANDLE win_handles[MAX_THREADS];
+#else
+    pthread_t handles[MAX_THREADS];
 #endif
+    volatile int go = 0;
     for (int i = 0; i < threads; i++) {
         args[i].task = t;
         args[i].reps = reps;
@@ -738,7 +737,7 @@ static double time_task(const app_task *t, int threads, int reps)
         win_handles[i] = CreateThread(NULL, 0, worker_entry, &args[i], 0, NULL);
         if (!win_handles[i]) { fprintf(stderr, "CreateThread failed\n"); exit(1); }
 #else
-        if (pthread_create((pthread_t *)&handles[i], NULL, worker_entry, &args[i]) != 0) {
+        if (pthread_create(&handles[i], NULL, worker_entry, &args[i]) != 0) {
             fprintf(stderr, "pthread_create failed\n");
             exit(1);
         }
@@ -752,7 +751,7 @@ static double time_task(const app_task *t, int threads, int reps)
         WaitForSingleObject(win_handles[i], INFINITE);
         CloseHandle(win_handles[i]);
 #else
-        pthread_join((pthread_t)handles[i], NULL);
+        pthread_join(handles[i], NULL);
 #endif
         c ^= workers[i].result;
     }

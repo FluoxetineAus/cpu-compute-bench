@@ -1,3 +1,11 @@
-results/
-*.json
-*.txt
+.DS_Store
+*.o
+*.exe
+*.zip
+*.app
+build/
+cpu-bench
+application/application-bench
+application/application-bench-*
+memory/memory-bench
+memory/memory-bench-*
