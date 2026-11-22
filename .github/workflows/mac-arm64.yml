@@ -57,6 +57,13 @@ jobs:
           ./cpu-bench --samples "${{ github.event.inputs.samples }}" \
             --json "full-${{ matrix.os }}.json"
 
+      - name: Run Application benchmark
+        run: |
+          set -x
+          cc -O3 -std=c11 application/application_bench.c -o application-bench -lm
+          ./application-bench --samples "${{ github.event.inputs.samples }}" \
+            --json "application-${{ matrix.os }}.json"
+
       - name: Run cross-ISA scalar mode
         run: |
           set -x
@@ -89,5 +96,6 @@ jobs:
             full-*.json
             pcores-*.json
             arch-*.json
+            application-*.json
             prebuilt-*.json
           if-no-files-found: warn
