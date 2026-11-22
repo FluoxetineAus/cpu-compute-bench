@@ -26,6 +26,8 @@
 #include <windows.h>
 #else
 #include <unistd.h>
+#include <pthread.h>
+#include <sched.h>
 #if defined(__APPLE__)
 #include <sys/sysctl.h>
 #endif
@@ -33,6 +35,7 @@
 
 #define APP_VERSION "1.0"
 #define MAX_SAMPLES 15
+#define MAX_THREADS 24
 
 static volatile uint64_t g_sink;
 
@@ -154,6 +157,17 @@ typedef struct {
     int32_t prev[LZ_WINDOW];
 } lzss_state;
 
+typedef struct worker_ctx {
+    int tid;
+    lzss_state *lz_st;
+    uint8_t *lz_out, *lz_dec;
+    uint8_t *img_out;
+    uint32_t *sort_work;
+    double *mat_c;
+    uint8_t *copy_b;
+    uint64_t result;
+} worker_ctx;
+
 static void lzss_init(lzss_state *st)
 {
     for (int i = 0; i < LZ_HASH_SIZE; i++) st->head[i] = -1;
@@ -252,10 +266,9 @@ static size_t lzss_decompress(const uint8_t *in, size_t in_len,
 static uint8_t *sha_data;
 static size_t sha_size = 8 * 1024 * 1024;
 
-static uint8_t *lz_in, *lz_out, *lz_dec;
+static uint8_t *lz_in;
 static size_t lz_size = 4 * 1024 * 1024;
 static size_t lz_cap;
-static lzss_state *lz_st;
 
 static char *json_data;
 static size_t json_size;
@@ -269,20 +282,23 @@ static const char *patterns[] = {
 };
 #define PATTERN_COUNT (sizeof(patterns) / sizeof(patterns[0]))
 
-static uint8_t *img_in, *img_out;
+static uint8_t *img_in;
 static const int IMG_W = 1024, IMG_H = 1024;
 
-static uint32_t *sort_orig, *sort_work;
+static uint32_t *sort_orig;
 static const size_t SORT_N = 1u << 20;
 
-static double *mat_a, *mat_b, *mat_c;
+static double *mat_a, *mat_b;
 static const int MAT_N = 256;
 
-static uint8_t *copy_a, *copy_b;
-static const size_t COPY_SIZE = 128u * 1024u * 1024u;
+static uint8_t *copy_a;
+static const size_t COPY_SIZE = 16u * 1024u * 1024u;
+
+static worker_ctx *workers;
+static int worker_count;
 
 /* ------------------------------------------------------------------ prepare */
-static void prepare_all(void)
+static void prepare_all(int nthreads)
 {
     uint64_t seed = 0x123456789abcdef0ULL;
     sha_data = xalloc(sha_size);
@@ -290,13 +306,10 @@ static void prepare_all(void)
 
     lz_cap = lz_size + lz_size / 8 + 32;
     lz_in = xalloc(lz_size);
-    lz_out = xalloc(lz_cap);
-    lz_dec = xalloc(lz_cap);
     for (size_t i = 0; i < lz_size; i++) {
         if ((i / 64) % 3 == 0) lz_in[i] = (uint8_t)("Benchmark application data "[i % 30]);
         else lz_in[i] = (uint8_t)splitmix64(&seed);
     }
-    lz_st = xalloc(sizeof(lzss_state));
 
     size_t cap = 4 * 1024 * 1024;
     json_data = xalloc(cap);
@@ -327,7 +340,6 @@ static void prepare_all(void)
     text_size = wp;
 
     img_in = xalloc((size_t)IMG_W * IMG_H * 3);
-    img_out = xalloc((size_t)IMG_W * IMG_H * 3);
     for (int y = 0; y < IMG_H; y++)
         for (int x = 0; x < IMG_W; x++) {
             size_t o = ((size_t)y * IMG_W + x) * 3;
@@ -337,28 +349,39 @@ static void prepare_all(void)
         }
 
     sort_orig = xalloc(SORT_N * sizeof(uint32_t));
-    sort_work = xalloc(SORT_N * sizeof(uint32_t));
     for (size_t i = 0; i < SORT_N; i++) sort_orig[i] = (uint32_t)splitmix64(&seed);
 
     mat_a = xalloc(MAT_N * MAT_N * sizeof(double));
     mat_b = xalloc(MAT_N * MAT_N * sizeof(double));
-    mat_c = xalloc(MAT_N * MAT_N * sizeof(double));
     for (int i = 0; i < MAT_N * MAT_N; i++) {
         mat_a[i] = (double)((i * 17 + 3) % 101) / 101.0;
         mat_b[i] = (double)((i * 29 + 7) % 97) / 97.0;
-        mat_c[i] = 0.0;
     }
 
     copy_a = xalloc(COPY_SIZE);
-    copy_b = xalloc(COPY_SIZE);
     for (size_t i = 0; i < COPY_SIZE; i++) copy_a[i] = (uint8_t)i;
+
+    worker_count = nthreads;
+    workers = calloc((size_t)nthreads, sizeof(worker_ctx));
+    if (!workers) { fprintf(stderr, "worker alloc failed\n"); exit(1); }
+    for (int t = 0; t < nthreads; t++) {
+        workers[t].tid = t;
+        workers[t].lz_st = xalloc(sizeof(lzss_state));
+        workers[t].lz_out = xalloc(lz_cap);
+        workers[t].lz_dec = xalloc(lz_cap);
+        workers[t].img_out = xalloc((size_t)IMG_W * IMG_H * 3);
+        workers[t].sort_work = xalloc(SORT_N * sizeof(uint32_t));
+        workers[t].mat_c = xalloc(MAT_N * MAT_N * sizeof(double));
+        workers[t].copy_b = xalloc(COPY_SIZE);
+    }
 }
 
 /* ------------------------------------------------------------------ tasks */
 static int same_bytes(const uint8_t *a, const uint8_t *b, size_t n);
 
-static uint64_t run_sha(int reps)
+static uint64_t run_sha(worker_ctx *w, int reps)
 {
+    (void)w;
     uint8_t digest[32];
     uint64_t sum = 0;
     for (int r = 0; r < reps; r++) {
@@ -367,13 +390,13 @@ static uint64_t run_sha(int reps)
     }
     return sum;
 }
-static uint64_t run_lzss(int reps)
+static uint64_t run_lzss(worker_ctx *w, int reps)
 {
     uint64_t sum = 0;
     for (int r = 0; r < reps; r++) {
-        size_t clen = lzss_compress(lz_st, lz_in, lz_size, lz_out, lz_cap);
-        size_t dlen = lzss_decompress(lz_out, clen, lz_dec, lz_cap);
-        if (dlen != lz_size || !same_bytes(lz_in, lz_dec, lz_size)) {
+        size_t clen = lzss_compress(w->lz_st, lz_in, lz_size, w->lz_out, lz_cap);
+        size_t dlen = lzss_decompress(w->lz_out, clen, w->lz_dec, lz_cap);
+        if (dlen != lz_size || !same_bytes(lz_in, w->lz_dec, lz_size)) {
             fprintf(stderr, "LZSS verification failed\n");
             exit(1);
         }
@@ -476,8 +499,9 @@ static int jp_value(jparser *p)
     }
     return jp_number(p);
 }
-static uint64_t run_json(int reps)
+static uint64_t run_json(worker_ctx *w, int reps)
 {
+    (void)w;
     uint64_t sum = 0;
     for (int r = 0; r < reps; r++) {
         jparser p;
@@ -553,8 +577,9 @@ static void copy_words(uint8_t *dst, const uint8_t *src, size_t bytes)
     for (size_t i = 0; i < n; i++) d[i] = s[i];
 }
 
-static uint64_t run_text(int reps)
+static uint64_t run_text(worker_ctx *w, int reps)
 {
+    (void)w;
     uint64_t sum = 0;
     for (int r = 0; r < reps; r++)
         for (size_t i = 0; i < PATTERN_COUNT; i++)
@@ -562,7 +587,7 @@ static uint64_t run_text(int reps)
     return sum;
 }
 
-static uint64_t run_blur(int reps)
+static uint64_t run_blur(worker_ctx *w, int reps)
 {
     uint64_t sum = 0;
     for (int r = 0; r < reps; r++) {
@@ -581,53 +606,53 @@ static uint64_t run_blur(int reps)
                     }
                 }
                 size_t o = ((size_t)y * IMG_W + x) * 3;
-                img_out[o] = (uint8_t)(sr / cnt);
-                img_out[o+1] = (uint8_t)(sg / cnt);
-                img_out[o+2] = (uint8_t)(sb / cnt);
+                w->img_out[o] = (uint8_t)(sr / cnt);
+                w->img_out[o+1] = (uint8_t)(sg / cnt);
+                w->img_out[o+2] = (uint8_t)(sb / cnt);
             }
         }
-        for (size_t i = 0; i < (size_t)IMG_W * IMG_H * 3; i += 4096) sum += img_out[i];
+        for (size_t i = 0; i < (size_t)IMG_W * IMG_H * 3; i += 4096) sum += w->img_out[i];
     }
     return sum;
 }
 
-static uint64_t run_sort(int reps)
+static uint64_t run_sort(worker_ctx *w, int reps)
 {
     uint64_t sum = 0;
     for (int r = 0; r < reps; r++) {
-        copy_words((uint8_t *)sort_work, (const uint8_t *)sort_orig,
+        copy_words((uint8_t *)w->sort_work, (const uint8_t *)sort_orig,
                    SORT_N * sizeof(uint32_t));
-        heap_sort(sort_work, SORT_N);
-        for (size_t i = 0; i < SORT_N; i += 4096) sum += sort_work[i];
+        heap_sort(w->sort_work, SORT_N);
+        for (size_t i = 0; i < SORT_N; i += 4096) sum += w->sort_work[i];
     }
     return sum;
 }
 
-static uint64_t run_matmul(int reps)
+static uint64_t run_matmul(worker_ctx *w, int reps)
 {
     uint64_t sum = 0;
     for (int r = 0; r < reps; r++) {
         for (int i = 0; i < MAT_N; i++)
             for (int j = 0; j < MAT_N; j++)
-                mat_c[i*MAT_N+j] = 0.0;
+                w->mat_c[i*MAT_N+j] = 0.0;
         for (int i = 0; i < MAT_N; i++) {
             for (int k = 0; k < MAT_N; k++) {
                 double aik = mat_a[i*MAT_N+k];
                 for (int j = 0; j < MAT_N; j++)
-                    mat_c[i*MAT_N+j] += aik * mat_b[k*MAT_N+j];
+                    w->mat_c[i*MAT_N+j] += aik * mat_b[k*MAT_N+j];
             }
         }
-        for (int i = 0; i < MAT_N * MAT_N; i += 4096) sum += (uint64_t)mat_c[i];
+        for (int i = 0; i < MAT_N * MAT_N; i += 4096) sum += (uint64_t)w->mat_c[i];
     }
     return sum;
 }
 
-static uint64_t run_copy(int reps)
+static uint64_t run_copy(worker_ctx *w, int reps)
 {
     uint64_t sum = 0;
     for (int r = 0; r < reps; r++) {
-        copy_words(copy_b, copy_a, COPY_SIZE);
-        for (size_t i = 0; i < COPY_SIZE; i += 4096) sum += copy_b[i];
+        copy_words(w->copy_b, copy_a, COPY_SIZE);
+        for (size_t i = 0; i < COPY_SIZE; i += 4096) sum += w->copy_b[i];
     }
     return sum;
 }
@@ -641,7 +666,7 @@ typedef struct {
     double ops;
     double unit_scale;
     double ref;
-    uint64_t (*run)(int);
+    uint64_t (*run)(worker_ctx *, int);
 } app_task;
 
 static app_task tasks[] = {
@@ -652,27 +677,98 @@ static app_task tasks[] = {
     {"blur",    "Image blur 5x5","Imaging",     "MPix/s", 1024.0*1024.0, 1e6, 43.87, run_blur},
     {"sort",    "Sort 1M u32",   "Sorting",     "Melem/s",1.0*1024*1024, 1e6, 8.28, run_sort},
     {"matmul",  "Matmul 256^3",  "Numeric",     "GFLOP/s",2.0*256*256*256, 1e9, 7.96, run_matmul},
-    {"copy",    "Memory copy",   "Memory",      "GB/s",   128.0*1024*1024*2, 1e9, 13.64, run_copy},
+    {"copy",    "Memory copy",   "Memory",      "GB/s",   16.0*1024*1024*2, 1e9, 13.64, run_copy},
 };
 #define TASK_COUNT (sizeof(tasks) / sizeof(tasks[0]))
 
-static double time_task(const app_task *t, int reps)
+typedef struct {
+    const app_task *task;
+    int reps;
+    int tid;
+    volatile int *go;
+} thread_arg;
+
+#if defined(_WIN32)
+static DWORD WINAPI worker_entry(LPVOID p)
+#else
+static void *worker_entry(void *p)
+#endif
 {
+    thread_arg *a = (thread_arg *)p;
+    while (!*a->go) {
+#if defined(_WIN32)
+        Sleep(0);
+#else
+        sched_yield();
+#endif
+    }
+    workers[a->tid].result = a->task->run(&workers[a->tid], a->reps);
+#if defined(_WIN32)
+    return 0;
+#else
+    return NULL;
+#endif
+}
+
+static double time_task(const app_task *t, int threads, int reps)
+{
+    if (threads <= 1) {
+        uint64_t t0 = now_ns();
+        uint64_t c = t->run(&workers[0], reps);
+        uint64_t t1 = now_ns();
+        g_sink ^= c;
+        double sec = (double)(t1 - t0) / 1e9;
+        return sec > 1e-9 ? sec : 1e-9;
+    }
+
+    thread_arg args[MAX_THREADS];
+    void *handles[MAX_THREADS];
+    volatile int go = 0;
+#if defined(_WIN32)
+    HANDLE win_handles[MAX_THREADS];
+#endif
+    for (int i = 0; i < threads; i++) {
+        args[i].task = t;
+        args[i].reps = reps;
+        args[i].tid = i;
+        args[i].go = &go;
+    }
+    for (int i = 0; i < threads; i++) {
+#if defined(_WIN32)
+        win_handles[i] = CreateThread(NULL, 0, worker_entry, &args[i], 0, NULL);
+        if (!win_handles[i]) { fprintf(stderr, "CreateThread failed\n"); exit(1); }
+#else
+        if (pthread_create((pthread_t *)&handles[i], NULL, worker_entry, &args[i]) != 0) {
+            fprintf(stderr, "pthread_create failed\n");
+            exit(1);
+        }
+#endif
+    }
     uint64_t t0 = now_ns();
-    uint64_t c = t->run(reps);
+    go = 1;
+    uint64_t c = 0;
+    for (int i = 0; i < threads; i++) {
+#if defined(_WIN32)
+        WaitForSingleObject(win_handles[i], INFINITE);
+        CloseHandle(win_handles[i]);
+#else
+        pthread_join((pthread_t)handles[i], NULL);
+#endif
+        c ^= workers[i].result;
+    }
     uint64_t t1 = now_ns();
     g_sink ^= c;
     double sec = (double)(t1 - t0) / 1e9;
     return sec > 1e-9 ? sec : 1e-9;
 }
 
-static int calibrate(const app_task *t, int quick, int *out_reps)
+static void calibrate(const app_task *t, int threads, int quick, int *out_reps)
 {
     int reps = 1;
     double target = quick ? 0.10 : 0.20;
     double sec = 0;
     for (int k = 0; k < 12; k++) {
-        sec = time_task(t, reps);
+        sec = time_task(t, threads, reps);
         if (sec >= target * 0.7) break;
         double f = target / (sec > 1e-6 ? sec : 1e-6) * 0.85;
         if (f < 1.5) f = 1.5;
@@ -683,9 +779,22 @@ static int calibrate(const app_task *t, int quick, int *out_reps)
         reps = next;
     }
     *out_reps = reps;
-    return 0;
 }
 
+static double measure_task(const app_task *t, int threads, int samples, int *out_reps)
+{
+    int reps = 1;
+    calibrate(t, threads, 0, &reps);
+    time_task(t, threads, reps);
+    double v[MAX_SAMPLES];
+    for (int s = 0; s < samples; s++) {
+        double sec = time_task(t, threads, reps);
+        double ops = t->ops * (double)reps * (double)threads;
+        v[s] = ops / sec / t->unit_scale;
+    }
+    *out_reps = reps;
+    return median(v, samples);
+}
 
 static void print_usage(const char *p)
 {
@@ -712,6 +821,14 @@ int main(int argc, char **argv)
     int samples = 3;
     int quick = 0;
     const char *json_path = NULL;
+#if defined(_WIN32)
+    int threads = (int)GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+#else
+    long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+    int threads = (ncpu > 0) ? (int)ncpu : 4;
+#endif
+    if (threads < 1) threads = 1;
+    if (threads > MAX_THREADS) threads = MAX_THREADS;
 
 #if defined(_WIN32)
     SetConsoleOutputCP(CP_UTF8);
@@ -726,12 +843,18 @@ int main(int argc, char **argv)
             if (parse_int(argv[++i], &samples) || samples > MAX_SAMPLES) {
                 fprintf(stderr, "invalid --samples\n"); return 2;
             }
+        } else if (!strcmp(argv[i], "--threads") && i + 1 < argc) {
+            if (parse_int(argv[++i], &threads) || threads > MAX_THREADS) {
+                fprintf(stderr, "invalid --threads (1..%d)\n", MAX_THREADS); return 2;
+            }
         } else if (!strcmp(argv[i], "--json") && i + 1 < argc) json_path = argv[++i];
         else { fprintf(stderr, "unknown option: %s\n", argv[i]); return 2; }
     }
     if (quick) samples = 1;
+    if (threads < 1) threads = 1;
+    if (threads > MAX_THREADS) threads = MAX_THREADS;
 
-    prepare_all();
+    prepare_all(threads);
     tasks[2].ops = (double)json_size;
     tasks[3].ops = (double)text_size * (double)PATTERN_COUNT;
 
@@ -747,60 +870,108 @@ int main(int argc, char **argv)
     printf("Benchmark 2.0 Application " APP_VERSION "\n");
     printf("============================================================\n");
     printf("CPU        %s\n", cpu);
-    printf("Mode       single-thread application mix\n");
+    printf("Mode       single + multi application mix\n");
+    printf("Threads    %d\n", threads);
     printf("Samples    %d\n\n", samples);
+
+    double single_scores[TASK_COUNT], multi_scores[TASK_COUNT];
+    double single_rates[TASK_COUNT], multi_rates[TASK_COUNT];
+
+    printf("Single-thread application\n");
     printf("%-18s %-13s %16s %14s %10s\n", "TEST", "CATEGORY", "THROUGHPUT", "REFERENCE", "SCORE");
     printf("--------------------------------------------------------------------------\n");
-
-    double scores[TASK_COUNT];
-    double rates[TASK_COUNT];
     for (size_t i = 0; i < TASK_COUNT; i++) {
         const app_task *t = &tasks[i];
         int reps = 1;
-        calibrate(t, quick, &reps);
-        time_task(t, reps);
-        double v[MAX_SAMPLES];
-        for (int s = 0; s < samples; s++) {
-            double sec = time_task(t, reps);
-            double ops = t->ops * (double)reps;
-            v[s] = ops / sec / t->unit_scale;
-        }
-        double rate = median(v, samples);
-        double score = 1000.0 * rate / t->ref;
-        rates[i] = rate;
-        scores[i] = score;
+        double rate = measure_task(t, 1, samples, &reps);
+        single_rates[i] = rate;
+        single_scores[i] = 1000.0 * rate / t->ref;
         printf("%-18s %-13s %10.2f %-5s %14.2f %10.0f\n",
-               t->name, t->category, rate, t->unit, t->ref, score);
+               t->name, t->category, rate, t->unit, t->ref, single_scores[i]);
     }
-    double sum = 0.0;
-    for (size_t i = 0; i < TASK_COUNT; i++) sum += log(scores[i]);
-    double app_score = exp(sum / (double)TASK_COUNT);
+    double ss = 0.0;
+    for (size_t i = 0; i < TASK_COUNT; i++) ss += log(single_scores[i]);
+    double single_score = exp(ss / (double)TASK_COUNT);
     printf("--------------------------------------------------------------------------\n");
-    printf("%-18s %56.0f\n", "APP SCORE", app_score);
-    printf("============================================================\n");
-    printf("Unified baseline: Intel Core i7-9750H = 1000 in every task.\n");
-    printf("Single-thread application mix; no per-architecture baseline.\n");
+    printf("%-18s %56.0f\n", "SINGLE APP SCORE", single_score);
+    printf("============================================================\n\n");
 
-    if (json_path) {
-        FILE *fp = fopen(json_path, "w");
-        if (!fp) {
-            fprintf(stderr, "cannot write %s: %s\n", json_path, strerror(errno));
-            return 1;
-        }
-        fprintf(fp, "{\n  \"version\": \"%s\",\n  \"type\": \"application\",\n", APP_VERSION);
-        fprintf(fp, "  \"mode\": \"single-thread\",\n  \"samples\": %d,\n", samples);
-        fprintf(fp, "  \"cpu\": \"%s\",\n", cpu);
-        fprintf(fp, "  \"score\": %.2f,\n  \"tasks\": [\n", app_score);
+    if (threads > 1) {
+        printf("Multi-core application (%d threads)\n", threads);
+        printf("%-18s %-13s %16s %14s %10s\n", "TEST", "CATEGORY", "THROUGHPUT", "REFERENCE", "SCORE");
+        printf("--------------------------------------------------------------------------\n");
         for (size_t i = 0; i < TASK_COUNT; i++) {
-            fprintf(fp, "    {\"id\":\"%s\",\"name\":\"%s\",\"category\":\"%s\","
-                        "\"throughput\":%.4f,\"unit\":\"%s\",\"reference\":%.4f,\"score\":%.2f}%s\n",
-                    tasks[i].id, tasks[i].name, tasks[i].category,
-                    rates[i], tasks[i].unit, tasks[i].ref, scores[i],
-                    (i + 1 < TASK_COUNT) ? "," : "");
+            const app_task *t = &tasks[i];
+            int reps = 1;
+            double rate = measure_task(t, threads, samples, &reps);
+            multi_rates[i] = rate;
+            multi_scores[i] = 1000.0 * rate / t->ref;
+            printf("%-18s %-13s %10.2f %-5s %14.2f %10.0f\n",
+                   t->name, t->category, rate, t->unit, t->ref, multi_scores[i]);
         }
-        fprintf(fp, "  ]\n}\n");
-        fclose(fp);
-        printf("\nJSON written to %s\n", json_path);
+        double ms = 0.0, sc = 0.0;
+        for (size_t i = 0; i < TASK_COUNT; i++) {
+            ms += log(multi_scores[i]);
+            sc += log(multi_rates[i] / single_rates[i]);
+        }
+        double multi_score = exp(ms / (double)TASK_COUNT);
+        double scale = exp(sc / (double)TASK_COUNT);
+        double overall = sqrt(single_score * multi_score);
+        printf("--------------------------------------------------------------------------\n");
+        printf("%-18s %56.0f\n", "MULTI APP SCORE", multi_score);
+        printf("%-18s %55.2fx\n", "MULTI SCALE", scale);
+        printf("============================================================\n");
+        printf("%-18s %56.0f\n", "OVERALL", overall);
+        printf("============================================================\n");
+        printf("Unified baseline: Intel Core i7-9750H = 1000 per task.\n");
+        printf("MULTI SCORE = SINGLE x measured scaling; OVERALL = sqrt(SINGLE x MULTI).\n");
+
+        if (json_path) {
+            FILE *fp = fopen(json_path, "w");
+            if (!fp) { fprintf(stderr, "cannot write %s: %s\n", json_path, strerror(errno)); return 1; }
+            fprintf(fp, "{\n  \"version\": \"%s\",\n  \"type\": \"application\",\n", APP_VERSION);
+            fprintf(fp, "  \"mode\": \"single+multi\",\n  \"threads\": %d,\n  \"samples\": %d,\n", threads, samples);
+            fprintf(fp, "  \"cpu\": \"%s\",\n", cpu);
+            fprintf(fp, "  \"scores\": {\"single\": %.2f, \"multi\": %.2f, \"overall\": %.2f, \"scale\": %.4f},\n",
+                    single_score, multi_score, overall, scale);
+            fprintf(fp, "  \"tasks\": [\n");
+            for (size_t i = 0; i < TASK_COUNT; i++) {
+                fprintf(fp, "    {\"id\":\"%s\",\"name\":\"%s\",\"category\":\"%s\","
+                            "\"single_throughput\":%.4f,\"multi_throughput\":%.4f,"
+                            "\"unit\":\"%s\",\"reference\":%.4f,"
+                            "\"single_score\":%.2f,\"multi_score\":%.2f}%s\n",
+                        tasks[i].id, tasks[i].name, tasks[i].category,
+                        single_rates[i], multi_rates[i], tasks[i].unit, tasks[i].ref,
+                        single_scores[i], multi_scores[i],
+                        (i + 1 < TASK_COUNT) ? "," : "");
+            }
+            fprintf(fp, "  ]\n}\n");
+            fclose(fp);
+            printf("\nJSON written to %s\n", json_path);
+        }
+    } else {
+        printf("Multi-core skipped (threads = 1).\n");
+        printf("Unified baseline: Intel Core i7-9750H = 1000 per task.\n");
+        if (json_path) {
+            FILE *fp = fopen(json_path, "w");
+            if (!fp) { fprintf(stderr, "cannot write %s: %s\n", json_path, strerror(errno)); return 1; }
+            fprintf(fp, "{\n  \"version\": \"%s\",\n  \"type\": \"application\",\n", APP_VERSION);
+            fprintf(fp, "  \"mode\": \"single\",\n  \"threads\": 1,\n  \"samples\": %d,\n", samples);
+            fprintf(fp, "  \"cpu\": \"%s\",\n  \"scores\": {\"single\": %.2f, \"overall\": %.2f},\n",
+                    cpu, single_score, single_score);
+            fprintf(fp, "  \"tasks\": [\n");
+            for (size_t i = 0; i < TASK_COUNT; i++) {
+                fprintf(fp, "    {\"id\":\"%s\",\"name\":\"%s\",\"category\":\"%s\","
+                            "\"single_throughput\":%.4f,\"unit\":\"%s\",\"reference\":%.4f,"
+                            "\"single_score\":%.2f}%s\n",
+                        tasks[i].id, tasks[i].name, tasks[i].category,
+                        single_rates[i], tasks[i].unit, tasks[i].ref, single_scores[i],
+                        (i + 1 < TASK_COUNT) ? "," : "");
+            }
+            fprintf(fp, "  ]\n}\n");
+            fclose(fp);
+            printf("\nJSON written to %s\n", json_path);
+        }
     }
     return 0;
 }
